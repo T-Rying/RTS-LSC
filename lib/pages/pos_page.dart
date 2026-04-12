@@ -17,6 +17,8 @@ class _PosPageState extends State<PosPage> {
   late final WebViewController _controller;
   bool _loading = true;
   bool _credentialsInjected = false;
+  bool _showDebug = false;
+  final List<String> _debugLogs = [];
 
   String get _posUrl {
     final tenant = Uri.encodeComponent(widget.config.tenant);
@@ -25,10 +27,80 @@ class _PosPageState extends State<PosPage> {
     return 'https://businesscentral.dynamics.com/$tenant/$company/$device';
   }
 
-  /// JS bridge that intercepts the LSC_DeviceDialog control add-in calls.
-  /// LS Central calls SendRequestToAddInEx(type, id, json) from its web client.
-  /// We override it to forward to our Flutter LSAppShell JS channel.
-  /// We also provide OnResponseFromAddInEx so we can call it from Dart.
+  void _log(String msg) {
+    setState(() {
+      _debugLogs.add('[${DateTime.now().toString().substring(11, 19)}] $msg');
+      if (_debugLogs.length > 200) _debugLogs.removeAt(0);
+    });
+  }
+
+  /// JS that captures console.log/warn/error and window.alert, and
+  /// scans the page for any AppShell-related globals.
+  static const String _debugScript = '''
+    (function() {
+      if (window._rtslscDebug) return;
+      window._rtslscDebug = true;
+
+      // Capture console
+      var origLog = console.log, origWarn = console.warn, origErr = console.error;
+      console.log = function() {
+        var msg = Array.from(arguments).join(' ');
+        LSAppShellDebug.postMessage('LOG: ' + msg);
+        origLog.apply(console, arguments);
+      };
+      console.warn = function() {
+        var msg = Array.from(arguments).join(' ');
+        LSAppShellDebug.postMessage('WARN: ' + msg);
+        origWarn.apply(console, arguments);
+      };
+      console.error = function() {
+        var msg = Array.from(arguments).join(' ');
+        LSAppShellDebug.postMessage('ERROR: ' + msg);
+        origErr.apply(console, arguments);
+      };
+
+      // Capture uncaught errors
+      window.addEventListener('error', function(e) {
+        LSAppShellDebug.postMessage('UNCAUGHT: ' + e.message + ' at ' + e.filename + ':' + e.lineno);
+      });
+
+      // Capture alert (likely where the error message shows)
+      var origAlert = window.alert;
+      window.alert = function(msg) {
+        LSAppShellDebug.postMessage('ALERT: ' + msg);
+        origAlert.call(window, msg);
+      };
+
+      // Scan for AppShell-related globals
+      var scan = [];
+      var keys = ['LSAppShellDevice', 'LSAppShell', 'SendRequestToAddInEx',
+                  'OnResponseFromAddInEx', 'AppShell', 'appShell',
+                  'Microsoft', 'NAVDeviceHandler', 'DynamicsNAV'];
+      keys.forEach(function(k) {
+        if (window[k] !== undefined) scan.push(k + '=' + typeof window[k]);
+      });
+      if (window.Microsoft && window.Microsoft.Dynamics) {
+        scan.push('Microsoft.Dynamics exists');
+        if (window.Microsoft.Dynamics.NAV) {
+          scan.push('Microsoft.Dynamics.NAV exists');
+          var navKeys = Object.keys(window.Microsoft.Dynamics.NAV);
+          scan.push('NAV keys: ' + navKeys.join(', '));
+        }
+      }
+      LSAppShellDebug.postMessage('GLOBALS: ' + scan.join(' | '));
+
+      // Scan iframes
+      try {
+        var frames = document.querySelectorAll('iframe');
+        LSAppShellDebug.postMessage('IFRAMES: ' + frames.length + ' found');
+      } catch(e) {}
+
+      // Check user agent
+      LSAppShellDebug.postMessage('UA: ' + navigator.userAgent);
+    })();
+  ''';
+
+  /// JS bridge for LSC_DeviceDialog control add-in protocol.
   static const String _bridgeScript = '''
     (function() {
       window.SendRequestToAddInEx = function(type, id, jsonString) {
@@ -43,14 +115,11 @@ class _PosPageState extends State<PosPage> {
       };
 
       if (!window.OnResponseFromAddInEx) {
-        window.OnResponseFromAddInEx = function(type, id, success, jsonString) {
-          // BC picks this up via the LSC_DeviceDialog control add-in
-        };
+        window.OnResponseFromAddInEx = function(type, id, success, jsonString) {};
       }
     })();
   ''';
 
-  /// JS to suppress the on-screen keyboard on POS input fields.
   static const String _disableKeyboardScript = '''
     (function() {
       document.addEventListener('focusin', function(e) {
@@ -72,26 +141,40 @@ class _PosPageState extends State<PosPage> {
         'LSAppShell',
         onMessageReceived: _onMessage,
       )
+      ..addJavaScriptChannel(
+        'LSAppShellDebug',
+        onMessageReceived: (msg) => _log(msg.message),
+      )
       ..setNavigationDelegate(
         NavigationDelegate(
           onPageStarted: (url) {
             setState(() => _loading = true);
+            _log('PAGE START: $url');
           },
           onPageFinished: (url) {
             setState(() => _loading = false);
+            _log('PAGE DONE: $url');
+            // Inject debug first, then bridge
+            _controller.runJavaScript(_debugScript);
             if (url.contains('businesscentral.dynamics.com')) {
               _controller.runJavaScript(_bridgeScript);
               _controller.runJavaScript(_disableKeyboardScript);
+              _log('Bridge + keyboard scripts injected');
             }
             _tryInjectCredentials(url);
           },
         ),
       )
+      ..setOnConsoleMessage((msg) {
+        _log('CONSOLE[${msg.level.name}]: ${msg.message}');
+      })
       ..loadRequest(Uri.parse(_posUrl));
+
+    _log('Loading: $_posUrl');
   }
 
-  /// Handle incoming messages from the LSC_DeviceDialog control add-in.
   void _onMessage(JavaScriptMessage message) {
+    _log('BRIDGE MSG: ${message.message}');
     try {
       final msg = jsonDecode(message.message) as Map<String, dynamic>;
       if (msg['method'] == 'SendRequestToAddInEx') {
@@ -101,61 +184,61 @@ class _PosPageState extends State<PosPage> {
           data: msg['data'] as String,
         );
       }
-    } catch (_) {}
+    } catch (e) {
+      _log('BRIDGE PARSE ERROR: $e');
+    }
   }
 
-  /// Route device requests based on type.
   void _handleDeviceRequest({
     required String type,
     required String id,
     required String data,
   }) {
+    _log('DEVICE REQ: type=$type id=$id');
     final json = jsonDecode(data) as Map<String, dynamic>;
     final eftSettings = json['EFTSettings'] as Map<String, dynamic>?;
     final host = eftSettings?['Host'] as String? ?? '';
-    final isAppShell = host == '###LSAPPSHELL';
+    _log('  Host=$host');
 
-    // Only handle locally if configured for AppShell
-    if (!isAppShell) return;
+    final isAppShell = host == '###LSAPPSHELL';
+    if (!isAppShell) {
+      _log('  Not AppShell host, ignoring');
+      return;
+    }
 
     switch (type) {
       case 'StartSession':
         _sendResponseToBC(
-          type: 'STARTSESSION',
-          id: id,
-          success: true,
+          type: 'STARTSESSION', id: id, success: true,
           data: '{"SessionResponse":"StartingSessionSuccessful"}',
         );
         break;
-
       case 'FinishSession':
         _sendResponseToBC(type: 'FINISHSESSION', id: id, success: true, data: '{}');
         break;
-
       case 'CloseAddIn':
         _sendResponseToBC(type: 'CLOSEADDIN', id: id, success: true, data: '{}');
         break;
-
       case 'EFT:REQUEST':
         _handleEftRequest(id, json);
         break;
-
       default:
-        // Legacy: EFT:PURCHASE, EFT:REFUND, EFT:VOID
         if (type.startsWith('EFT:')) {
           _handleEftRequest(id, json);
+        } else {
+          _log('  Unknown type: $type');
         }
         break;
     }
   }
 
-  /// Handle EFT payment requests by routing to SoftPay.
   void _handleEftRequest(String id, Map<String, dynamic> json) {
+    final command = json['Command'] as String? ?? 'Purchase';
+    _log('EFT REQ: command=$command');
+
     if (!widget.config.softPayEnabled) {
       _sendResponseToBC(
-        type: json['Command'] as String? ?? 'Purchase',
-        id: id,
-        success: false,
+        type: command, id: id, success: false,
         data: 'SoftPay is not enabled in app settings',
       );
       return;
@@ -165,12 +248,12 @@ class _PosPageState extends State<PosPage> {
     final totalAmount = amountBreakdown?['TotalAmount'];
     final currencyCode = amountBreakdown?['CurrencyCode'] as String? ?? 'DKK';
     final transactionId = json['TransactionId'] as String? ?? '';
-    final command = json['Command'] as String? ?? 'Purchase';
 
-    // Convert to minor units (cents/øre)
     final amountMinor = totalAmount is num
         ? (totalAmount * 100).round()
         : int.tryParse(totalAmount.toString()) ?? 0;
+
+    _log('  Amount=$totalAmount ($amountMinor minor) $currencyCode ref=$transactionId');
 
     final params = {
       'integrator_id': widget.config.softPayIntegratorId,
@@ -181,36 +264,27 @@ class _PosPageState extends State<PosPage> {
       'callback': 'rtslsc://softpay-callback',
     };
 
-    final uri = Uri(
-      scheme: 'softpay',
-      host: 'payment',
-      queryParameters: params,
-    );
+    final uri = Uri(scheme: 'softpay', host: 'payment', queryParameters: params);
+    _log('  Launching: $uri');
 
     launchUrl(uri, mode: LaunchMode.externalApplication).then((launched) {
       if (!launched) {
-        _sendResponseToBC(
-          type: command,
-          id: id,
-          success: false,
-          data: 'Could not launch SoftPay app',
-        );
+        _log('  SoftPay launch FAILED');
+        _sendResponseToBC(type: command, id: id, success: false, data: 'Could not launch SoftPay app');
+      } else {
+        _log('  SoftPay launched OK');
       }
-      // SoftPay will callback via rtslsc://softpay-callback with the result.
-      // TODO: Handle the callback and send the response back to BC.
     });
   }
 
-  /// Send a response back to LS Central via the OnResponseFromAddInEx bridge.
   Future<void> _sendResponseToBC({
     required String type,
     required String id,
     required bool success,
     required String data,
   }) async {
-    final escapedData = data
-        .replaceAll('\\', '\\\\')
-        .replaceAll("'", "\\'");
+    _log('RESPONSE: type=$type id=$id success=$success');
+    final escapedData = data.replaceAll('\\', '\\\\').replaceAll("'", "\\'");
     await _controller.runJavaScript(
       "window.OnResponseFromAddInEx('$type', '$id', $success, '$escapedData');",
     );
@@ -218,7 +292,6 @@ class _PosPageState extends State<PosPage> {
 
   Future<void> _tryInjectCredentials(String url) async {
     if (_credentialsInjected) return;
-
     final username = widget.config.posUsername;
     final password = widget.config.posPassword;
     if (username.isEmpty || password.isEmpty) return;
@@ -227,6 +300,7 @@ class _PosPageState extends State<PosPage> {
     final safePass = password.replaceAll("'", "\\'");
 
     if (url.contains('login.microsoftonline.com') || url.contains('login.live.com')) {
+      _log('Injecting login credentials');
       await _controller.runJavaScript('''
         (function() {
           var emailInput = document.querySelector('input[name="loginfmt"]');
@@ -255,7 +329,6 @@ class _PosPageState extends State<PosPage> {
           }
         })();
       ''');
-
       _credentialsInjected = true;
     }
   }
@@ -265,21 +338,85 @@ class _PosPageState extends State<PosPage> {
     return CupertinoPageScaffold(
       navigationBar: CupertinoNavigationBar(
         middle: const Text('POS'),
-        trailing: CupertinoButton(
-          padding: EdgeInsets.zero,
-          child: const Icon(CupertinoIcons.refresh),
-          onPressed: () {
-            _credentialsInjected = false;
-            _controller.reload();
-          },
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CupertinoButton(
+              padding: EdgeInsets.zero,
+              child: Icon(
+                CupertinoIcons.doc_text,
+                color: _showDebug ? CupertinoColors.activeOrange : null,
+              ),
+              onPressed: () => setState(() => _showDebug = !_showDebug),
+            ),
+            CupertinoButton(
+              padding: EdgeInsets.zero,
+              child: const Icon(CupertinoIcons.refresh),
+              onPressed: () {
+                _credentialsInjected = false;
+                _debugLogs.clear();
+                _controller.reload();
+              },
+            ),
+          ],
         ),
       ),
       child: SafeArea(
-        child: Stack(
+        child: Column(
           children: [
-            WebViewWidget(controller: _controller),
-            if (_loading)
-              const Center(child: CupertinoActivityIndicator(radius: 16)),
+            Expanded(
+              child: Stack(
+                children: [
+                  WebViewWidget(controller: _controller),
+                  if (_loading)
+                    const Center(child: CupertinoActivityIndicator(radius: 16)),
+                ],
+              ),
+            ),
+            if (_showDebug)
+              Container(
+                height: 200,
+                color: CupertinoColors.black,
+                child: Column(
+                  children: [
+                    Row(
+                      children: [
+                        const Padding(
+                          padding: EdgeInsets.all(8),
+                          child: Text('Debug Console',
+                              style: TextStyle(color: CupertinoColors.white, fontSize: 12, fontWeight: FontWeight.bold)),
+                        ),
+                        const Spacer(),
+                        CupertinoButton(
+                          padding: const EdgeInsets.all(8),
+                          minSize: 0,
+                          child: const Text('Clear', style: TextStyle(color: CupertinoColors.activeOrange, fontSize: 12)),
+                          onPressed: () => setState(() => _debugLogs.clear()),
+                        ),
+                      ],
+                    ),
+                    Expanded(
+                      child: ListView.builder(
+                        reverse: true,
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        itemCount: _debugLogs.length,
+                        itemBuilder: (_, i) {
+                          final log = _debugLogs[_debugLogs.length - 1 - i];
+                          Color color = CupertinoColors.systemGrey2;
+                          if (log.contains('ERROR') || log.contains('UNCAUGHT') || log.contains('FAILED')) {
+                            color = CupertinoColors.systemRed;
+                          } else if (log.contains('WARN') || log.contains('ALERT')) {
+                            color = CupertinoColors.systemOrange;
+                          } else if (log.contains('BRIDGE') || log.contains('DEVICE REQ')) {
+                            color = CupertinoColors.systemGreen;
+                          }
+                          return Text(log, style: TextStyle(color: color, fontSize: 11, fontFamily: 'Courier'));
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
           ],
         ),
       ),
