@@ -177,6 +177,45 @@ class _PosPageState extends State<PosPage> {
         }
       };
 
+      // The LSC_DeviceDialog control add-in uses LSAppShellAPIClass which
+      // calls window.top.LSAppShell.request(type, id, json). Flutter's
+      // addJavaScriptChannel only provides postMessage(). We add the
+      // methods the control add-in expects.
+      function patchLSAppShell(w) {
+        var obj = w.LSAppShell;
+        if (!obj || obj._rtslsc_patched) return;
+        obj._rtslsc_patched = true;
+
+        var send = function(method, args) {
+          D('LSAppShell.' + method + '(' + Array.prototype.slice.call(args).map(function(a) {
+            return typeof a === 'string' ? a.substring(0, 200) : String(a);
+          }).join(', ') + ')');
+          try {
+            obj.postMessage(JSON.stringify({
+              "method": method,
+              "args": Array.prototype.slice.call(args)
+            }));
+          } catch(e) { D('LSAppShell postMessage error: ' + e); }
+          return '{}';
+        };
+
+        // The control add-in calls LSAppShell.request(type, id, json)
+        obj.request = function() { return send('request', arguments); };
+        obj.Request = function() { return send('Request', arguments); };
+        obj.PostMessage = function(msg) { return send('PostMessage', arguments); };
+        obj.Purchase = function() { return send('Purchase', arguments); };
+        obj.Refund = function() { return send('Refund', arguments); };
+        obj.Void = function() { return send('Void', arguments); };
+        obj.Print = function() { return send('Print', arguments); };
+        obj.CameraBarcodeScanner = function() { return send('CameraBarcodeScanner', arguments); };
+        obj.cameraBarcodeScanner = function() { return send('cameraBarcodeScanner', arguments); };
+        obj.OpenDrawer = function() { return send('OpenDrawer', arguments); };
+        obj.IsDrawerOpened = function() { return send('IsDrawerOpened', arguments); };
+        obj.GetLastTransaction = function() { return send('GetLastTransaction', arguments); };
+        D('patched LSAppShell in frame');
+      }
+      patchLSAppShell(window);
+
       // PascalCase method aliases for LSAppShellWebPOS.
       // The real AppShell's addJavascriptInterface exposes PascalCase methods
       // (PostMessage, Request, Purchase, etc.) that return String synchronously.
@@ -220,8 +259,8 @@ class _PosPageState extends State<PosPage> {
         function walk(w) {
           try {
             w.inAppShell = true;
+            patchLSAppShell(w);
             patchAppShellInterface(w);
-            // Also recurse into sub-iframes
             for (var i = 0; i < w.frames.length; i++) {
               try { walk(w.frames[i]); } catch(e) {}
             }
@@ -405,12 +444,39 @@ class _PosPageState extends State<PosPage> {
     _log.info('BRIDGE MSG: ${message.message}');
     try {
       final msg = jsonDecode(message.message) as Map<String, dynamic>;
-      if (msg['method'] == 'SendRequestToAddInEx') {
+      final method = msg['method'] as String? ?? '';
+
+      if (method == 'SendRequestToAddInEx') {
         _handleDeviceRequest(
           type: msg['type'] as String,
           id: msg['id'] as String,
           data: msg['data'] as String,
         );
+      } else if (method == 'request' || method == 'Request') {
+        // LSAppShellAPIClass calls LSAppShell.request(type, id, json)
+        final args = msg['args'] as List<dynamic>? ?? [];
+        _handleDeviceRequest(
+          type: args.isNotEmpty ? args[0].toString() : '',
+          id: args.length > 1 ? args[1].toString() : '',
+          data: args.length > 2 ? args[2].toString() : '{}',
+        );
+      } else if (method == 'PostMessage') {
+        // Generic PostMessage — try to parse as device request
+        final args = msg['args'] as List<dynamic>? ?? [];
+        if (args.isNotEmpty) {
+          try {
+            final inner = jsonDecode(args[0].toString()) as Map<String, dynamic>;
+            _handleDeviceRequest(
+              type: inner['type'] as String? ?? inner['method'] as String? ?? '',
+              id: inner['id'] as String? ?? '',
+              data: args[0].toString(),
+            );
+          } catch (_) {
+            _log.debug('PostMessage payload not a device request: ${args[0]}');
+          }
+        }
+      } else {
+        _log.debug('Unknown LSAppShell method: $method');
       }
     } catch (e) {
       _log.error('BRIDGE PARSE ERROR: $e');
