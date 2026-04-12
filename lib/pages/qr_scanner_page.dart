@@ -1,5 +1,5 @@
 import 'dart:convert';
-import 'package:flutter/material.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import '../models/environment_config.dart';
 
@@ -33,9 +33,17 @@ class _QrScannerPageState extends State<QrScannerPage> {
       Navigator.pop(context, config);
     } catch (_) {
       setState(() => _hasScanned = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Invalid QR code. Expected a valid connection config.'),
+      showCupertinoDialog(
+        context: context,
+        builder: (_) => CupertinoAlertDialog(
+          title: const Text('Invalid QR Code'),
+          content: const Text('Expected a valid connection configuration.'),
+          actions: [
+            CupertinoDialogAction(
+              child: const Text('OK'),
+              onPressed: () => Navigator.pop(context),
+            ),
+          ],
         ),
       );
     }
@@ -43,29 +51,32 @@ class _QrScannerPageState extends State<QrScannerPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Scan QR Code'),
-        backgroundColor: Theme.of(context).colorScheme.primary,
-        foregroundColor: Colors.white,
+    return CupertinoPageScaffold(
+      navigationBar: const CupertinoNavigationBar(
+        middle: Text('Scan QR Code'),
       ),
-      body: Column(
-        children: [
-          Expanded(
-            child: MobileScanner(
-              controller: _controller,
-              onDetect: _onDetect,
+      child: SafeArea(
+        child: Column(
+          children: [
+            Expanded(
+              child: MobileScanner(
+                controller: _controller,
+                onDetect: _onDetect,
+              ),
             ),
-          ),
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Text(
-              'Point your camera at a connection QR code',
-              style: TextStyle(fontSize: 14, color: Colors.grey[600]),
-              textAlign: TextAlign.center,
+            const Padding(
+              padding: EdgeInsets.all(16),
+              child: Text(
+                'Point your camera at a connection QR code',
+                style: TextStyle(
+                  fontSize: 14,
+                  color: CupertinoColors.systemGrey,
+                ),
+                textAlign: TextAlign.center,
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

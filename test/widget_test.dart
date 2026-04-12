@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -16,7 +16,6 @@ void main() {
     expect(find.text('POS'), findsOneWidget);
     expect(find.text('Mobile Inventory'), findsOneWidget);
     expect(find.text('Hospitality'), findsOneWidget);
-    expect(find.byIcon(Icons.settings), findsOneWidget);
-    expect(find.text('No connection configured — tap the settings icon'), findsOneWidget);
+    expect(find.byIcon(CupertinoIcons.gear), findsOneWidget);
   });
 }

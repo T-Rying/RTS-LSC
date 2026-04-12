@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:flutter/cupertino.dart';
 import '../models/environment_config.dart';
 import '../services/environment_service.dart';
 import 'qr_scanner_page.dart';
@@ -37,11 +37,10 @@ class _SettingsPageState extends State<SettingsPage> {
   void _scanQrCode() async {
     final result = await Navigator.push<EnvironmentConfig>(
       context,
-      MaterialPageRoute(builder: (_) => const QrScannerPage()),
+      CupertinoPageRoute(builder: (_) => const QrScannerPage()),
     );
     if (result == null) return;
 
-    // Preserve existing POS credentials if present
     if (_connection != null) {
       result.posUsername = _connection!.posUsername;
       result.posPassword = _connection!.posPassword;
@@ -63,139 +62,124 @@ class _SettingsPageState extends State<SettingsPage> {
     final clientSecretController = TextEditingController(text: existing?.clientSecret ?? '');
     final companyController = TextEditingController(text: existing?.company ?? '');
 
-    showDialog(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: const Text('API Connection'),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text(
-                  'Used by Mobile Inventory and Hospitality',
-                  style: TextStyle(fontSize: 13, color: Colors.grey[600]),
-                ),
-                const SizedBox(height: 16),
-                SegmentedButton<ConnectionType>(
-                  segments: const [
-                    ButtonSegment(
-                      value: ConnectionType.onPremise,
-                      label: Text('On-Premise'),
-                      icon: Icon(Icons.dns),
-                    ),
-                    ButtonSegment(
-                      value: ConnectionType.saas,
-                      label: Text('SaaS'),
-                      icon: Icon(Icons.cloud),
-                    ),
-                  ],
-                  selected: {selectedType},
-                  onSelectionChanged: (selection) {
-                    setDialogState(() => selectedType = selection.first);
-                  },
-                ),
-                const SizedBox(height: 16),
-                if (selectedType == ConnectionType.onPremise) ...[
-                  TextField(
-                    controller: serverController,
-                    decoration: const InputDecoration(
-                      labelText: 'Server Address',
-                      hintText: 'e.g. 192.168.1.100 or server.local',
+    Navigator.push(
+      context,
+      CupertinoPageRoute(
+        builder: (context) => StatefulBuilder(
+          builder: (context, setSheetState) => CupertinoPageScaffold(
+            navigationBar: CupertinoNavigationBar(
+              middle: const Text('API Connection'),
+              leading: CupertinoButton(
+                padding: EdgeInsets.zero,
+                child: const Text('Cancel'),
+                onPressed: () => Navigator.pop(context),
+              ),
+              trailing: CupertinoButton(
+                padding: EdgeInsets.zero,
+                child: const Text('Save', style: TextStyle(fontWeight: FontWeight.w600)),
+                onPressed: () async {
+                  if (selectedType == ConnectionType.onPremise) {
+                    if (serverController.text.trim().isEmpty) return;
+                  } else {
+                    if (tenantController.text.trim().isEmpty ||
+                        clientIdController.text.trim().isEmpty ||
+                        clientSecretController.text.trim().isEmpty) return;
+                  }
+
+                  final config = EnvironmentConfig(
+                    type: selectedType,
+                    serverUrl: serverController.text.trim(),
+                    instance: instanceController.text.trim(),
+                    port: int.tryParse(portController.text.trim()) ?? 7048,
+                    tenant: tenantController.text.trim(),
+                    clientId: clientIdController.text.trim(),
+                    clientSecret: clientSecretController.text.trim(),
+                    company: companyController.text.trim(),
+                    posUsername: existing?.posUsername ?? '',
+                    posPassword: existing?.posPassword ?? '',
+                    deviceType: existing?.deviceType ?? DeviceType.phone,
+                  );
+
+                  await widget.envService.saveConnection(config);
+                  setState(() => _connection = config);
+                  if (context.mounted) Navigator.pop(context);
+                },
+              ),
+            ),
+            child: SafeArea(
+              child: ListView(
+                children: [
+                  const _SectionLabel('Used by Mobile Inventory and Hospitality'),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    child: CupertinoSlidingSegmentedControl<ConnectionType>(
+                      groupValue: selectedType,
+                      children: const {
+                        ConnectionType.onPremise: Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          child: Text('On-Premise'),
+                        ),
+                        ConnectionType.saas: Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          child: Text('SaaS'),
+                        ),
+                      },
+                      onValueChanged: (value) {
+                        if (value != null) {
+                          setSheetState(() => selectedType = value);
+                        }
+                      },
                     ),
                   ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: portController,
-                    decoration: const InputDecoration(
-                      labelText: 'Port',
-                      hintText: '7048',
-                    ),
-                    keyboardType: TextInputType.number,
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: instanceController,
-                    decoration: const InputDecoration(
-                      labelText: 'Server Instance',
-                      hintText: 'e.g. BC250',
-                    ),
+                  CupertinoListSection.insetGrouped(
+                    children: [
+                      if (selectedType == ConnectionType.onPremise) ...[
+                        CupertinoTextFormFieldRow(
+                          controller: serverController,
+                          prefix: const _FieldLabel('Server'),
+                          placeholder: '192.168.1.100 or server.local',
+                        ),
+                        CupertinoTextFormFieldRow(
+                          controller: portController,
+                          prefix: const _FieldLabel('Port'),
+                          placeholder: '7048',
+                          keyboardType: TextInputType.number,
+                        ),
+                        CupertinoTextFormFieldRow(
+                          controller: instanceController,
+                          prefix: const _FieldLabel('Instance'),
+                          placeholder: 'e.g. BC250',
+                        ),
+                      ],
+                      if (selectedType == ConnectionType.saas) ...[
+                        CupertinoTextFormFieldRow(
+                          controller: tenantController,
+                          prefix: const _FieldLabel('Tenant ID'),
+                          placeholder: 'your-tenant-id.onmicrosoft.com',
+                        ),
+                        CupertinoTextFormFieldRow(
+                          controller: clientIdController,
+                          prefix: const _FieldLabel('Client ID'),
+                          placeholder: 'Azure AD app client ID',
+                        ),
+                        CupertinoTextFormFieldRow(
+                          controller: clientSecretController,
+                          prefix: const _FieldLabel('Secret'),
+                          placeholder: 'Azure AD app client secret',
+                          obscureText: true,
+                        ),
+                      ],
+                      CupertinoTextFormFieldRow(
+                        controller: companyController,
+                        prefix: const _FieldLabel('Company'),
+                        placeholder: 'CRONUS International Ltd.',
+                      ),
+                    ],
                   ),
                 ],
-                if (selectedType == ConnectionType.saas) ...[
-                  TextField(
-                    controller: tenantController,
-                    decoration: const InputDecoration(
-                      labelText: 'Tenant ID',
-                      hintText: 'e.g. your-tenant-id.onmicrosoft.com',
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: clientIdController,
-                    decoration: const InputDecoration(
-                      labelText: 'Client ID',
-                      hintText: 'Azure AD app client ID',
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: clientSecretController,
-                    decoration: const InputDecoration(
-                      labelText: 'Client Secret',
-                      hintText: 'Azure AD app client secret',
-                    ),
-                    obscureText: true,
-                  ),
-                ],
-                const SizedBox(height: 12),
-                TextField(
-                  controller: companyController,
-                  decoration: const InputDecoration(
-                    labelText: 'Company',
-                    hintText: 'e.g. CRONUS International Ltd.',
-                  ),
-                ),
-              ],
+              ),
             ),
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () async {
-                if (selectedType == ConnectionType.onPremise) {
-                  if (serverController.text.trim().isEmpty) return;
-                } else {
-                  if (tenantController.text.trim().isEmpty ||
-                      clientIdController.text.trim().isEmpty ||
-                      clientSecretController.text.trim().isEmpty) return;
-                }
-
-                final config = EnvironmentConfig(
-                  type: selectedType,
-                  serverUrl: serverController.text.trim(),
-                  instance: instanceController.text.trim(),
-                  port: int.tryParse(portController.text.trim()) ?? 7048,
-                  tenant: tenantController.text.trim(),
-                  clientId: clientIdController.text.trim(),
-                  clientSecret: clientSecretController.text.trim(),
-                  company: companyController.text.trim(),
-                  posUsername: existing?.posUsername ?? '',
-                  posPassword: existing?.posPassword ?? '',
-                  deviceType: existing?.deviceType ?? DeviceType.phone,
-                );
-
-                await widget.envService.saveConnection(config);
-                setState(() => _connection = config);
-                if (context.mounted) Navigator.pop(context);
-              },
-              child: const Text('Save'),
-            ),
-          ],
         ),
       ),
     );
@@ -205,356 +189,286 @@ class _SettingsPageState extends State<SettingsPage> {
     final usernameController = TextEditingController(text: existing?.posUsername ?? '');
     final passwordController = TextEditingController(text: existing?.posPassword ?? '');
 
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('POS Login'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Text(
-                'Used by POS only',
-                style: TextStyle(fontSize: 13, color: Colors.grey[600]),
-              ),
-              const SizedBox(height: 16),
-              TextField(
-                controller: usernameController,
-                decoration: const InputDecoration(
-                  labelText: 'Username',
-                  hintText: 'POS operator username',
+    Navigator.push(
+      context,
+      CupertinoPageRoute(
+        builder: (context) => CupertinoPageScaffold(
+          navigationBar: CupertinoNavigationBar(
+            middle: const Text('POS Login'),
+            leading: CupertinoButton(
+              padding: EdgeInsets.zero,
+              child: const Text('Cancel'),
+              onPressed: () => Navigator.pop(context),
+            ),
+            trailing: CupertinoButton(
+              padding: EdgeInsets.zero,
+              child: const Text('Save', style: TextStyle(fontWeight: FontWeight.w600)),
+              onPressed: () async {
+                if (_connection == null) return;
+
+                _connection!.posUsername = usernameController.text.trim();
+                _connection!.posPassword = passwordController.text.trim();
+
+                await widget.envService.saveConnection(_connection!);
+                setState(() {});
+                if (context.mounted) Navigator.pop(context);
+              },
+            ),
+          ),
+          child: SafeArea(
+            child: ListView(
+              children: [
+                const _SectionLabel('Used by POS only'),
+                CupertinoListSection.insetGrouped(
+                  children: [
+                    CupertinoTextFormFieldRow(
+                      controller: usernameController,
+                      prefix: const _FieldLabel('Username'),
+                      placeholder: 'POS operator username',
+                    ),
+                    CupertinoTextFormFieldRow(
+                      controller: passwordController,
+                      prefix: const _FieldLabel('Password'),
+                      placeholder: 'POS operator password',
+                      obscureText: true,
+                    ),
+                  ],
                 ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: passwordController,
-                decoration: const InputDecoration(
-                  labelText: 'Password',
-                  hintText: 'POS operator password',
-                ),
-                obscureText: true,
-              ),
-            ],
+              ],
+            ),
           ),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () async {
-              if (_connection == null) return;
-
-              _connection!.posUsername = usernameController.text.trim();
-              _connection!.posPassword = passwordController.text.trim();
-
-              await widget.envService.saveConnection(_connection!);
-              setState(() {});
-              if (context.mounted) Navigator.pop(context);
-            },
-            child: const Text('Save'),
-          ),
-        ],
       ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Settings'),
-        backgroundColor: theme.colorScheme.primary,
-        foregroundColor: Colors.white,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.qr_code_scanner),
-            tooltip: 'Scan QR Code',
-            onPressed: _scanQrCode,
-          ),
-        ],
+    return CupertinoPageScaffold(
+      navigationBar: CupertinoNavigationBar(
+        middle: const Text('Settings'),
+        trailing: CupertinoButton(
+          padding: EdgeInsets.zero,
+          child: const Icon(CupertinoIcons.qrcode_viewfinder),
+          onPressed: _scanQrCode,
+        ),
       ),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          // --- API Connection section ---
-          _SectionHeader(
-            icon: Icons.api,
-            title: 'API Connection',
-            subtitle: 'Mobile Inventory & Hospitality',
-          ),
-          const SizedBox(height: 8),
-          if (_connection == null)
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  children: [
-                    const Icon(Icons.link_off, size: 48, color: Colors.grey),
-                    const SizedBox(height: 12),
-                    const Text(
-                      'No connection configured',
-                      style: TextStyle(fontSize: 16, color: Colors.grey),
+      child: SafeArea(
+        child: ListView(
+          children: [
+            // --- API Connection ---
+            CupertinoListSection.insetGrouped(
+              header: const Text('API CONNECTION — Mobile Inventory & Hospitality'),
+              children: [
+                if (_connection == null)
+                  CupertinoListTile(
+                    leading: const Icon(CupertinoIcons.link, color: CupertinoColors.systemGrey),
+                    title: const Text('No connection configured'),
+                    subtitle: const Text('Tap to setup'),
+                    trailing: const CupertinoListTileChevron(),
+                    onTap: _editConnection,
+                  )
+                else ...[
+                  CupertinoListTile(
+                    leading: Icon(
+                      _connection!.type == ConnectionType.saas
+                          ? CupertinoIcons.cloud
+                          : CupertinoIcons.desktopcomputer,
                     ),
-                    const SizedBox(height: 16),
-                    FilledButton.icon(
-                      onPressed: _editConnection,
-                      icon: const Icon(Icons.add),
-                      label: const Text('Setup Manually'),
+                    title: Text(_connection!.displayName),
+                    subtitle: Text(
+                      _connection!.type == ConnectionType.saas
+                          ? _connection!.tenant
+                          : _connection!.serverUrl,
                     ),
-                    const SizedBox(height: 8),
-                    OutlinedButton.icon(
-                      onPressed: _scanQrCode,
-                      icon: const Icon(Icons.qr_code_scanner),
-                      label: const Text('Scan QR Code'),
-                    ),
+                    trailing: const CupertinoListTileChevron(),
+                    onTap: _editConnection,
+                  ),
+                  if (_connection!.type == ConnectionType.onPremise) ...[
+                    _InfoTile('Port', _connection!.port.toString()),
+                    if (_connection!.instance.isNotEmpty)
+                      _InfoTile('Instance', _connection!.instance),
                   ],
-                ),
-              ),
-            )
-          else
-            Card(
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-                side: BorderSide(color: theme.colorScheme.primary, width: 2),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Icon(
-                          _connection!.type == ConnectionType.saas
-                              ? Icons.cloud
-                              : Icons.dns,
-                          color: theme.colorScheme.primary,
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          _connection!.displayName,
-                          style: const TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        const Spacer(),
-                        IconButton(
-                          icon: const Icon(Icons.edit),
-                          onPressed: _editConnection,
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.delete_outline, color: Colors.red),
-                          onPressed: _deleteConnection,
-                        ),
-                      ],
-                    ),
-                    const Divider(),
-                    if (_connection!.type == ConnectionType.onPremise) ...[
-                      _DetailRow('Server', _connection!.serverUrl),
-                      _DetailRow('Port', _connection!.port.toString()),
-                      if (_connection!.instance.isNotEmpty)
-                        _DetailRow('Instance', _connection!.instance),
-                    ],
-                    if (_connection!.type == ConnectionType.saas) ...[
-                      _DetailRow('Tenant', _connection!.tenant),
-                      _DetailRow('Client ID', _connection!.clientId),
-                      const _DetailRow('Secret', '••••••••'),
-                    ],
-                    if (_connection!.company.isNotEmpty)
-                      _DetailRow('Company', _connection!.company),
+                  if (_connection!.type == ConnectionType.saas) ...[
+                    _InfoTile('Client ID', _connection!.clientId),
+                    const _InfoTile('Secret', '••••••••'),
                   ],
-                ),
-              ),
+                  if (_connection!.company.isNotEmpty)
+                    _InfoTile('Company', _connection!.company),
+                ],
+              ],
             ),
 
-          const SizedBox(height: 24),
-
-          // --- Device Type section ---
-          _SectionHeader(
-            icon: Icons.devices,
-            title: 'Device Type',
-            subtitle: 'POS layout',
-          ),
-          const SizedBox(height: 8),
-          if (_connection == null)
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Text(
-                  'Setup an API connection first',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 14, color: Colors.grey[500]),
-                ),
-              ),
-            )
-          else
-            Card(
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-                side: BorderSide(color: theme.colorScheme.primary, width: 2),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: SegmentedButton<DeviceType>(
-                  segments: const [
-                    ButtonSegment(
-                      value: DeviceType.phone,
-                      label: Text('Phone'),
-                      icon: Icon(Icons.smartphone),
-                    ),
-                    ButtonSegment(
-                      value: DeviceType.tablet,
-                      label: Text('Tablet'),
-                      icon: Icon(Icons.tablet),
-                    ),
-                  ],
-                  selected: {_connection!.deviceType},
-                  onSelectionChanged: (selection) async {
-                    _connection!.deviceType = selection.first;
-                    await widget.envService.saveConnection(_connection!);
-                    setState(() {});
-                  },
-                ),
-              ),
-            ),
-
-          const SizedBox(height: 24),
-
-          // --- POS Login section ---
-          _SectionHeader(
-            icon: Icons.point_of_sale,
-            title: 'POS Login',
-            subtitle: 'POS only',
-          ),
-          const SizedBox(height: 8),
-          if (_connection == null)
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Text(
-                  'Setup an API connection first',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 14, color: Colors.grey[500]),
-                ),
-              ),
-            )
-          else
-            Card(
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-                side: _connection!.posUsername.isNotEmpty
-                    ? BorderSide(color: theme.colorScheme.primary, width: 2)
-                    : BorderSide.none,
-              ),
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+            if (_connection != null)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Row(
                   children: [
-                    Row(
-                      children: [
-                        Icon(Icons.person, color: theme.colorScheme.primary),
-                        const SizedBox(width: 8),
-                        Text(
-                          _connection!.posUsername.isNotEmpty
-                              ? _connection!.posUsername
-                              : 'Not configured',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w600,
-                            color: _connection!.posUsername.isNotEmpty
-                                ? null
-                                : Colors.grey,
-                          ),
-                        ),
-                        const Spacer(),
-                        IconButton(
-                          icon: const Icon(Icons.edit),
-                          onPressed: _editPosCredentials,
-                        ),
-                      ],
+                    Expanded(
+                      child: CupertinoButton(
+                        padding: EdgeInsets.zero,
+                        child: const Text('Setup Manually'),
+                        onPressed: _editConnection,
+                      ),
                     ),
-                    if (_connection!.posUsername.isNotEmpty) ...[
-                      const Divider(),
-                      _DetailRow('Username', _connection!.posUsername),
-                      const _DetailRow('Password', '••••••••'),
-                    ],
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: CupertinoButton(
+                        padding: EdgeInsets.zero,
+                        child: const Text('Scan QR Code'),
+                        onPressed: _scanQrCode,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    CupertinoButton(
+                      padding: EdgeInsets.zero,
+                      child: const Text(
+                        'Delete',
+                        style: TextStyle(color: CupertinoColors.destructiveRed),
+                      ),
+                      onPressed: _deleteConnection,
+                    ),
                   ],
                 ),
               ),
+
+            if (_connection == null)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: CupertinoButton.filled(
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        onPressed: _editConnection,
+                        child: const Text('Setup Manually'),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: CupertinoButton(
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        onPressed: _scanQrCode,
+                        child: const Text('Scan QR Code'),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+            // --- Device Type ---
+            CupertinoListSection.insetGrouped(
+              header: const Text('DEVICE TYPE — POS Layout'),
+              children: [
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  child: _connection == null
+                      ? const Text(
+                          'Setup a connection first',
+                          style: TextStyle(color: CupertinoColors.systemGrey),
+                        )
+                      : CupertinoSlidingSegmentedControl<DeviceType>(
+                          groupValue: _connection!.deviceType,
+                          children: const {
+                            DeviceType.phone: Padding(
+                              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                              child: Text('Phone'),
+                            ),
+                            DeviceType.tablet: Padding(
+                              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                              child: Text('Tablet'),
+                            ),
+                          },
+                          onValueChanged: (value) async {
+                            if (value == null || _connection == null) return;
+                            _connection!.deviceType = value;
+                            await widget.envService.saveConnection(_connection!);
+                            setState(() {});
+                          },
+                        ),
+                ),
+              ],
             ),
-        ],
+
+            // --- POS Login ---
+            CupertinoListSection.insetGrouped(
+              header: const Text('POS LOGIN — POS Only'),
+              children: [
+                if (_connection == null)
+                  const CupertinoListTile(
+                    title: Text(
+                      'Setup a connection first',
+                      style: TextStyle(color: CupertinoColors.systemGrey),
+                    ),
+                  )
+                else ...[
+                  CupertinoListTile(
+                    leading: const Icon(CupertinoIcons.person),
+                    title: Text(
+                      _connection!.posUsername.isNotEmpty
+                          ? _connection!.posUsername
+                          : 'Not configured',
+                    ),
+                    subtitle: _connection!.posUsername.isNotEmpty
+                        ? const Text('Password: ••••••••')
+                        : const Text('Tap to configure'),
+                    trailing: const CupertinoListTileChevron(),
+                    onTap: _editPosCredentials,
+                  ),
+                ],
+              ],
+            ),
+
+            const SizedBox(height: 32),
+          ],
+        ),
       ),
     );
   }
 }
 
-class _SectionHeader extends StatelessWidget {
-  final IconData icon;
-  final String title;
-  final String subtitle;
-
-  const _SectionHeader({
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Icon(icon, size: 20, color: Colors.grey[700]),
-        const SizedBox(width: 8),
-        Text(
-          title,
-          style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.w600,
-              ),
-        ),
-        const SizedBox(width: 8),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-          decoration: BoxDecoration(
-            color: Colors.grey[200],
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Text(
-            subtitle,
-            style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _DetailRow extends StatelessWidget {
-  final String label;
-  final String value;
-
-  const _DetailRow(this.label, this.value);
+class _SectionLabel extends StatelessWidget {
+  final String text;
+  const _SectionLabel(this.text);
 
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: 80,
-            child: Text(label, style: const TextStyle(color: Colors.grey)),
-          ),
-          Expanded(child: Text(value)),
-        ],
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 4),
+      child: Text(
+        text,
+        style: const TextStyle(
+          fontSize: 13,
+          color: CupertinoColors.systemGrey,
+        ),
       ),
+    );
+  }
+}
+
+class _FieldLabel extends StatelessWidget {
+  final String text;
+  const _FieldLabel(this.text);
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 80,
+      child: Text(text),
+    );
+  }
+}
+
+class _InfoTile extends StatelessWidget {
+  final String label;
+  final String value;
+  const _InfoTile(this.label, this.value);
+
+  @override
+  Widget build(BuildContext context) {
+    return CupertinoListTile(
+      title: Text(label),
+      additionalInfo: Text(value),
     );
   }
 }

@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import '../models/environment_config.dart';
 
@@ -50,11 +50,9 @@ class _PosPageState extends State<PosPage> {
     final password = widget.config.posPassword;
     if (username.isEmpty || password.isEmpty) return;
 
-    // Escape single quotes in credentials for JS string safety
     final safeUser = username.replaceAll("'", "\\'");
     final safePass = password.replaceAll("'", "\\'");
 
-    // Microsoft Entra ID login: fill email/username field
     if (url.contains('login.microsoftonline.com') || url.contains('login.live.com')) {
       await _controller.runJavaScript('''
         (function() {
@@ -62,7 +60,6 @@ class _PosPageState extends State<PosPage> {
           if (emailInput) {
             emailInput.value = '$safeUser';
             emailInput.dispatchEvent(new Event('input', { bubbles: true }));
-            // Click the Next button after a short delay
             setTimeout(function() {
               var nextBtn = document.querySelector('input[type="submit"]');
               if (nextBtn) nextBtn.click();
@@ -71,7 +68,6 @@ class _PosPageState extends State<PosPage> {
         })();
       ''');
 
-      // After the page transitions to password step, fill password
       await Future.delayed(const Duration(seconds: 2));
       await _controller.runJavaScript('''
         (function() {
@@ -93,27 +89,26 @@ class _PosPageState extends State<PosPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('POS'),
-        backgroundColor: Theme.of(context).colorScheme.primary,
-        foregroundColor: Colors.white,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: () {
-              _credentialsInjected = false;
-              _controller.reload();
-            },
-          ),
-        ],
+    return CupertinoPageScaffold(
+      navigationBar: CupertinoNavigationBar(
+        middle: const Text('POS'),
+        trailing: CupertinoButton(
+          padding: EdgeInsets.zero,
+          child: const Icon(CupertinoIcons.refresh),
+          onPressed: () {
+            _credentialsInjected = false;
+            _controller.reload();
+          },
+        ),
       ),
-      body: Stack(
-        children: [
-          WebViewWidget(controller: _controller),
-          if (_loading)
-            const Center(child: CircularProgressIndicator()),
-        ],
+      child: SafeArea(
+        child: Stack(
+          children: [
+            WebViewWidget(controller: _controller),
+            if (_loading)
+              const Center(child: CupertinoActivityIndicator(radius: 16)),
+          ],
+        ),
       ),
     );
   }
