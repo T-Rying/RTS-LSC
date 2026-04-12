@@ -1,4 +1,6 @@
+import 'dart:convert';
 import 'package:flutter/cupertino.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import '../models/environment_config.dart';
 
@@ -29,6 +31,11 @@ class _PosPageState extends State<PosPage> {
 
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setUserAgent('LSAppShell/1.0')
+      ..addJavaScriptChannel(
+        'LSAppShell',
+        onMessageReceived: _onAppShellMessage,
+      )
       ..setNavigationDelegate(
         NavigationDelegate(
           onPageStarted: (_) {
@@ -36,11 +43,161 @@ class _PosPageState extends State<PosPage> {
           },
           onPageFinished: (url) {
             setState(() => _loading = false);
+            _injectAppShellBridge();
             _tryInjectCredentials(url);
           },
         ),
       )
       ..loadRequest(Uri.parse(_posUrl));
+  }
+
+  /// Injects the LSAppShell JavaScript bridge that LS Central POS expects.
+  Future<void> _injectAppShellBridge() async {
+    await _controller.runJavaScript('''
+      (function() {
+        if (window.LSAppShellDevice) return;
+
+        window.LSAppShellDevice = {
+          _version: '1.0',
+          _platform: 'RTS-LSC',
+
+          isAppShell: function() { return true; },
+
+          getDeviceId: function() { return 'LSAPPSHELL'; },
+
+          sendMessage: function(message) {
+            if (window.LSAppShell) {
+              window.LSAppShell.postMessage(JSON.stringify(message));
+            }
+          },
+
+          paymentRequest: function(amount, currency, reference) {
+            var msg = {
+              type: 'paymentRequest',
+              amount: amount,
+              currency: currency,
+              reference: reference || ''
+            };
+            this.sendMessage(msg);
+          },
+
+          paymentReversal: function(amount, currency, reference) {
+            var msg = {
+              type: 'paymentReversal',
+              amount: amount,
+              currency: currency,
+              reference: reference || ''
+            };
+            this.sendMessage(msg);
+          },
+
+          openUrl: function(url) {
+            var msg = { type: 'openUrl', url: url };
+            this.sendMessage(msg);
+          },
+
+          printReceipt: function(data) {
+            var msg = { type: 'printReceipt', data: data };
+            this.sendMessage(msg);
+          }
+        };
+
+        // Register extensibility method handler for LS Central AL calls
+        if (!window.Microsoft) window.Microsoft = {};
+        if (!window.Microsoft.Dynamics) window.Microsoft.Dynamics = {};
+        if (!window.Microsoft.Dynamics.NAV) window.Microsoft.Dynamics.NAV = {};
+        if (!window.Microsoft.Dynamics.NAV.InvokeExtensibilityMethod) {
+          window.Microsoft.Dynamics.NAV.InvokeExtensibilityMethod = function(method, args) {
+            var msg = { type: 'extensibility', method: method, args: args };
+            if (window.LSAppShell) {
+              window.LSAppShell.postMessage(JSON.stringify(msg));
+            }
+          };
+        }
+
+        console.log('LSAppShellDevice bridge injected by RTS-LSC');
+      })();
+    ''');
+  }
+
+  /// Handles messages from LS Central POS via the AppShell bridge.
+  void _onAppShellMessage(JavaScriptMessage message) {
+    try {
+      final msg = jsonDecode(message.message) as Map<String, dynamic>;
+      final type = msg['type'] as String?;
+
+      switch (type) {
+        case 'paymentRequest':
+        case 'paymentReversal':
+          _handlePaymentRequest(msg);
+          break;
+        case 'openUrl':
+          final url = msg['url'] as String?;
+          if (url != null) launchUrl(Uri.parse(url));
+          break;
+        case 'extensibility':
+          _handleExtensibility(msg);
+          break;
+      }
+    } catch (_) {
+      // Ignore malformed messages
+    }
+  }
+
+  void _handlePaymentRequest(Map<String, dynamic> msg) {
+    if (!widget.config.softPayEnabled) {
+      _sendPaymentResult(success: false, error: 'SoftPay is not enabled');
+      return;
+    }
+
+    final amount = msg['amount'];
+    final currency = msg['currency'] as String? ?? 'DKK';
+    final reference = msg['reference'] as String? ?? '';
+
+    final amountMinor = amount is int ? amount : int.tryParse(amount.toString()) ?? 0;
+
+    final params = {
+      'integrator_id': widget.config.softPayIntegratorId,
+      'credentials': widget.config.softPayCredentials,
+      'amount': amountMinor.toString(),
+      'currency': currency,
+      if (reference.isNotEmpty) 'reference': reference,
+      'callback': 'rtslsc://softpay-callback',
+    };
+
+    final uri = Uri(
+      scheme: 'softpay',
+      host: 'payment',
+      queryParameters: params,
+    );
+
+    launchUrl(uri, mode: LaunchMode.externalApplication).then((launched) {
+      if (!launched) {
+        _sendPaymentResult(success: false, error: 'Could not launch SoftPay');
+      }
+    });
+  }
+
+  void _handleExtensibility(Map<String, dynamic> msg) {
+    final method = msg['method'] as String?;
+    final args = msg['args'] as List<dynamic>?;
+
+    if (method != null && method.toLowerCase().contains('payment') && args != null) {
+      _handlePaymentRequest({
+        'amount': args.isNotEmpty ? args[0] : 0,
+        'currency': args.length > 1 ? args[1] : 'DKK',
+        'reference': args.length > 2 ? args[2] : '',
+      });
+    }
+  }
+
+  /// Sends a payment result back to the LS Central POS webview.
+  void _sendPaymentResult({required bool success, String error = ''}) {
+    final safeError = error.replaceAll("'", "\\'");
+    _controller.runJavaScript(
+      "window.LSAppShellDevice && window.LSAppShellDevice.onPaymentComplete && "
+      "window.LSAppShellDevice.onPaymentComplete($success, '$safeError');",
+    );
   }
 
   Future<void> _tryInjectCredentials(String url) async {
