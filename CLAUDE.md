@@ -4,35 +4,61 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-RTS-LSC is a cross-platform mobile app (Android/iOS) built with Flutter/Dart. Package name: `com.rts.lsc`, project name: `rts_lsc`.
+RTS-LSC is a mobile companion app for **LS Central** (built on Business Central), targeting Android and iOS. Built with Flutter/Dart. Package: `com.rts.lsc`, project name: `rts_lsc`.
+
+The app has three modules on the home page:
+- **POS** — authenticates with username/password
+- **Mobile Inventory** — authenticates via API connection (OAuth client credentials for SaaS, or server connection for on-premise)
+- **Hospitality** — same API connection as Mobile Inventory
+
+## Architecture
+
+```
+lib/
+  main.dart                          # App entry, MyApp widget, HomePage with 3 module buttons
+  models/environment_config.dart     # EnvironmentConfig model (On-Premise vs SaaS), JSON serialization
+  services/environment_service.dart  # Persistence layer using SharedPreferences (single connection)
+  pages/
+    settings_page.dart               # Settings UI with two sections: API Connection + POS Login
+    qr_scanner_page.dart             # QR code scanner (mobile_scanner) to auto-fill settings
+```
+
+### Connection model
+
+Only one connection exists at a time. `EnvironmentConfig` has a `ConnectionType` enum (`onPremise` / `saas`):
+- **On-Premise**: serverUrl, port (default 7048), instance, company
+- **SaaS**: tenant, clientId, clientSecret, company
+- **POS credentials** (shared): posUsername, posPassword
+
+Settings are persisted via `shared_preferences` as JSON in a single key.
+
+### QR Code format
+
+The QR scanner expects a JSON string matching the `EnvironmentConfig.fromJson` format. See README.md for full field reference.
 
 ## Development Setup
 
-- Flutter SDK location: `C:/flutter/flutter/bin` (must be on PATH)
-- IDE: VS Code with `dart-code.flutter` and `alexisvt.flutter-snippets` extensions
-- GitHub: repo at `T-Rying/RTS-LSC`
+- Flutter SDK: `C:/flutter/flutter/bin` (must be on PATH)
+- IDE: VS Code with `dart-code.flutter` extension
+- GitHub: `T-Rying/RTS-LSC` on master branch
+- Android emulator: `Medium_Phone_API_36.1`
 
 ## Common Commands
 
 ```bash
 export PATH="$PATH:/c/flutter/flutter/bin"  # ensure Flutter is on PATH
 
-flutter run                  # run the app (requires connected device/emulator)
-flutter build apk            # build Android APK
-flutter build ios            # build iOS (requires macOS)
+flutter run                  # run on connected device/emulator
 flutter test                 # run all tests
-flutter test test/widget_test.dart  # run a single test file
+flutter test test/widget_test.dart  # run a single test
 flutter pub get              # fetch dependencies
 flutter pub add <package>    # add a dependency
-flutter analyze              # run static analysis (uses analysis_options.yaml)
-flutter doctor               # check environment setup
+flutter analyze              # static analysis
+flutter emulators --launch Medium_Phone_API_36.1  # start Android emulator
 ```
 
-## Architecture
+## Key Dependencies
 
-Standard Flutter project structure:
-- `lib/main.dart` — app entry point
-- `test/` — widget and unit tests
-- `pubspec.yaml` — dependencies and project metadata
-- `analysis_options.yaml` — lint rules (uses `flutter_lints`)
-- Platform-specific code: `android/`, `ios/`, `web/`, `windows/`, `linux/`, `macos/`
+- `shared_preferences` — persisting connection settings
+- `mobile_scanner` — QR code scanning for setup
+- `cupertino_icons` — iOS-style icons
