@@ -25,6 +25,49 @@ class _PosPageState extends State<PosPage> {
     return 'https://businesscentral.dynamics.com/$tenant/$company/$device';
   }
 
+  static const String _bridgeScript = '''
+    window.LSAppShellDevice = {
+      _version: '1.0',
+      _platform: 'RTS-LSC',
+
+      isAppShell: function() { return true; },
+      getDeviceId: function() { return 'LSAPPSHELL'; },
+
+      sendMessage: function(message) {
+        if (window.LSAppShell) {
+          window.LSAppShell.postMessage(JSON.stringify(message));
+        }
+      },
+
+      paymentRequest: function(amount, currency, reference) {
+        this.sendMessage({ type: 'paymentRequest', amount: amount, currency: currency, reference: reference || '' });
+      },
+
+      paymentReversal: function(amount, currency, reference) {
+        this.sendMessage({ type: 'paymentReversal', amount: amount, currency: currency, reference: reference || '' });
+      },
+
+      openUrl: function(url) {
+        this.sendMessage({ type: 'openUrl', url: url });
+      },
+
+      printReceipt: function(data) {
+        this.sendMessage({ type: 'printReceipt', data: data });
+      }
+    };
+
+    if (!window.Microsoft) window.Microsoft = {};
+    if (!window.Microsoft.Dynamics) window.Microsoft.Dynamics = {};
+    if (!window.Microsoft.Dynamics.NAV) window.Microsoft.Dynamics.NAV = {};
+    if (!window.Microsoft.Dynamics.NAV.InvokeExtensibilityMethod) {
+      window.Microsoft.Dynamics.NAV.InvokeExtensibilityMethod = function(method, args) {
+        if (window.LSAppShell) {
+          window.LSAppShell.postMessage(JSON.stringify({ type: 'extensibility', method: method, args: args }));
+        }
+      };
+    }
+  ''';
+
   @override
   void initState() {
     super.initState();
@@ -38,86 +81,25 @@ class _PosPageState extends State<PosPage> {
       )
       ..setNavigationDelegate(
         NavigationDelegate(
-          onPageStarted: (_) {
+          onPageStarted: (url) {
             setState(() => _loading = true);
+            // Inject bridge as early as possible before page scripts run
+            _controller.runJavaScript(_bridgeScript);
           },
           onPageFinished: (url) {
             setState(() => _loading = false);
-            _injectAppShellBridge();
+            // Re-inject in case page scripts overwrote or ran before our injection
+            _controller.runJavaScript(_bridgeScript);
             _tryInjectCredentials(url);
+          },
+          onNavigationRequest: (request) {
+            // Inject before every navigation
+            _controller.runJavaScript(_bridgeScript);
+            return NavigationDecision.navigate;
           },
         ),
       )
       ..loadRequest(Uri.parse(_posUrl));
-  }
-
-  /// Injects the LSAppShell JavaScript bridge that LS Central POS expects.
-  Future<void> _injectAppShellBridge() async {
-    await _controller.runJavaScript('''
-      (function() {
-        if (window.LSAppShellDevice) return;
-
-        window.LSAppShellDevice = {
-          _version: '1.0',
-          _platform: 'RTS-LSC',
-
-          isAppShell: function() { return true; },
-
-          getDeviceId: function() { return 'LSAPPSHELL'; },
-
-          sendMessage: function(message) {
-            if (window.LSAppShell) {
-              window.LSAppShell.postMessage(JSON.stringify(message));
-            }
-          },
-
-          paymentRequest: function(amount, currency, reference) {
-            var msg = {
-              type: 'paymentRequest',
-              amount: amount,
-              currency: currency,
-              reference: reference || ''
-            };
-            this.sendMessage(msg);
-          },
-
-          paymentReversal: function(amount, currency, reference) {
-            var msg = {
-              type: 'paymentReversal',
-              amount: amount,
-              currency: currency,
-              reference: reference || ''
-            };
-            this.sendMessage(msg);
-          },
-
-          openUrl: function(url) {
-            var msg = { type: 'openUrl', url: url };
-            this.sendMessage(msg);
-          },
-
-          printReceipt: function(data) {
-            var msg = { type: 'printReceipt', data: data };
-            this.sendMessage(msg);
-          }
-        };
-
-        // Register extensibility method handler for LS Central AL calls
-        if (!window.Microsoft) window.Microsoft = {};
-        if (!window.Microsoft.Dynamics) window.Microsoft.Dynamics = {};
-        if (!window.Microsoft.Dynamics.NAV) window.Microsoft.Dynamics.NAV = {};
-        if (!window.Microsoft.Dynamics.NAV.InvokeExtensibilityMethod) {
-          window.Microsoft.Dynamics.NAV.InvokeExtensibilityMethod = function(method, args) {
-            var msg = { type: 'extensibility', method: method, args: args };
-            if (window.LSAppShell) {
-              window.LSAppShell.postMessage(JSON.stringify(msg));
-            }
-          };
-        }
-
-        console.log('LSAppShellDevice bridge injected by RTS-LSC');
-      })();
-    ''');
   }
 
   /// Handles messages from LS Central POS via the AppShell bridge.
