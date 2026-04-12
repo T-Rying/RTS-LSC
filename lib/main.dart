@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'models/environment_config.dart';
+import 'pages/pos_page.dart';
 import 'pages/settings_page.dart';
 import 'services/environment_service.dart';
 
@@ -90,7 +91,24 @@ class HomePage extends StatelessWidget {
               icon: Icons.point_of_sale,
               label: 'POS',
               onTap: () {
-                // TODO: Navigate to POS module
+                if (connection == null) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Configure a connection in Settings first')),
+                  );
+                  return;
+                }
+                if (connection.tenant.isEmpty || connection.company.isEmpty) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Tenant and Company are required for POS')),
+                  );
+                  return;
+                }
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => PosPage(config: connection),
+                  ),
+                );
               },
             ),
             const SizedBox(height: 20),
