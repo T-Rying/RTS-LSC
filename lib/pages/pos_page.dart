@@ -25,47 +25,66 @@ class _PosPageState extends State<PosPage> {
     return 'https://businesscentral.dynamics.com/$tenant/$company/$device';
   }
 
-  static const String _bridgeScript = '''
-    window.LSAppShellDevice = {
-      _version: '1.0',
-      _platform: 'RTS-LSC',
-
-      isAppShell: function() { return true; },
-      getDeviceId: function() { return 'LSAPPSHELL'; },
-
-      sendMessage: function(message) {
-        if (window.LSAppShell) {
-          window.LSAppShell.postMessage(JSON.stringify(message));
+  /// JS to disable keyboard focus on input fields inside the POS.
+  static const String _disableKeyboardScript = '''
+    (function() {
+      document.addEventListener('focusin', function(e) {
+        if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) {
+          e.target.setAttribute('readonly', 'readonly');
+          setTimeout(function() { e.target.removeAttribute('readonly'); }, 100);
         }
-      },
+      }, true);
+    })();
+  ''';
 
-      paymentRequest: function(amount, currency, reference) {
-        this.sendMessage({ type: 'paymentRequest', amount: amount, currency: currency, reference: reference || '' });
-      },
+  /// JS bridge for AppShell communication — only injected on the BC POS page,
+  /// not on the login page. LS Central hardware station config must use
+  /// ###LSAPPSHELL as Printer Server Host to activate AppShell mode.
+  static const String _bridgeScript = '''
+    (function() {
+      if (window.LSAppShellDevice) return;
 
-      paymentReversal: function(amount, currency, reference) {
-        this.sendMessage({ type: 'paymentReversal', amount: amount, currency: currency, reference: reference || '' });
-      },
+      window.LSAppShellDevice = {
+        _version: '1.0',
+        _platform: 'RTS-LSC',
 
-      openUrl: function(url) {
-        this.sendMessage({ type: 'openUrl', url: url });
-      },
+        isAppShell: function() { return true; },
+        getDeviceId: function() { return 'LSAPPSHELL'; },
 
-      printReceipt: function(data) {
-        this.sendMessage({ type: 'printReceipt', data: data });
-      }
-    };
+        sendMessage: function(message) {
+          if (window.LSAppShell) {
+            window.LSAppShell.postMessage(JSON.stringify(message));
+          }
+        },
 
-    if (!window.Microsoft) window.Microsoft = {};
-    if (!window.Microsoft.Dynamics) window.Microsoft.Dynamics = {};
-    if (!window.Microsoft.Dynamics.NAV) window.Microsoft.Dynamics.NAV = {};
-    if (!window.Microsoft.Dynamics.NAV.InvokeExtensibilityMethod) {
+        paymentRequest: function(amount, currency, reference) {
+          this.sendMessage({ type: 'paymentRequest', amount: amount, currency: currency, reference: reference || '' });
+        },
+
+        paymentReversal: function(amount, currency, reference) {
+          this.sendMessage({ type: 'paymentReversal', amount: amount, currency: currency, reference: reference || '' });
+        },
+
+        openUrl: function(url) {
+          this.sendMessage({ type: 'openUrl', url: url });
+        },
+
+        printReceipt: function(data) {
+          this.sendMessage({ type: 'printReceipt', data: data });
+        }
+      };
+
+      if (!window.Microsoft) window.Microsoft = {};
+      if (!window.Microsoft.Dynamics) window.Microsoft.Dynamics = {};
+      if (!window.Microsoft.Dynamics.NAV) window.Microsoft.Dynamics.NAV = {};
+      var origMethod = window.Microsoft.Dynamics.NAV.InvokeExtensibilityMethod;
       window.Microsoft.Dynamics.NAV.InvokeExtensibilityMethod = function(method, args) {
         if (window.LSAppShell) {
           window.LSAppShell.postMessage(JSON.stringify({ type: 'extensibility', method: method, args: args }));
         }
+        if (origMethod) origMethod.call(this, method, args);
       };
-    }
+    })();
   ''';
 
   @override
@@ -74,7 +93,6 @@ class _PosPageState extends State<PosPage> {
 
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setUserAgent('LSAppShell/1.0')
       ..addJavaScriptChannel(
         'LSAppShell',
         onMessageReceived: _onAppShellMessage,
@@ -83,26 +101,21 @@ class _PosPageState extends State<PosPage> {
         NavigationDelegate(
           onPageStarted: (url) {
             setState(() => _loading = true);
-            // Inject bridge as early as possible before page scripts run
-            _controller.runJavaScript(_bridgeScript);
           },
           onPageFinished: (url) {
             setState(() => _loading = false);
-            // Re-inject in case page scripts overwrote or ran before our injection
-            _controller.runJavaScript(_bridgeScript);
+            // Only inject bridge on BC pages, not login pages
+            if (url.contains('businesscentral.dynamics.com')) {
+              _controller.runJavaScript(_bridgeScript);
+              _controller.runJavaScript(_disableKeyboardScript);
+            }
             _tryInjectCredentials(url);
-          },
-          onNavigationRequest: (request) {
-            // Inject before every navigation
-            _controller.runJavaScript(_bridgeScript);
-            return NavigationDecision.navigate;
           },
         ),
       )
       ..loadRequest(Uri.parse(_posUrl));
   }
 
-  /// Handles messages from LS Central POS via the AppShell bridge.
   void _onAppShellMessage(JavaScriptMessage message) {
     try {
       final msg = jsonDecode(message.message) as Map<String, dynamic>;
@@ -121,9 +134,7 @@ class _PosPageState extends State<PosPage> {
           _handleExtensibility(msg);
           break;
       }
-    } catch (_) {
-      // Ignore malformed messages
-    }
+    } catch (_) {}
   }
 
   void _handlePaymentRequest(Map<String, dynamic> msg) {
@@ -135,7 +146,6 @@ class _PosPageState extends State<PosPage> {
     final amount = msg['amount'];
     final currency = msg['currency'] as String? ?? 'DKK';
     final reference = msg['reference'] as String? ?? '';
-
     final amountMinor = amount is int ? amount : int.tryParse(amount.toString()) ?? 0;
 
     final params = {
@@ -173,7 +183,6 @@ class _PosPageState extends State<PosPage> {
     }
   }
 
-  /// Sends a payment result back to the LS Central POS webview.
   void _sendPaymentResult({required bool success, String error = ''}) {
     final safeError = error.replaceAll("'", "\\'");
     _controller.runJavaScript(
