@@ -21,6 +21,10 @@ class EnvironmentConfig {
   String posPassword;
   // Device type
   DeviceType deviceType;
+  // SoftPay
+  bool softPayEnabled;
+  String softPayIntegratorId;
+  String softPayCredentials;
 
   EnvironmentConfig({
     required this.type,
@@ -34,6 +38,9 @@ class EnvironmentConfig {
     this.posUsername = '',
     this.posPassword = '',
     required this.deviceType,
+    this.softPayEnabled = false,
+    this.softPayIntegratorId = '',
+    this.softPayCredentials = '',
   });
 
   String get displayName => type == ConnectionType.saas ? 'SaaS' : 'On-Premise';
@@ -50,6 +57,9 @@ class EnvironmentConfig {
         'posUsername': posUsername,
         'posPassword': posPassword,
         'deviceType': deviceType.name,
+        'softPayEnabled': softPayEnabled,
+        'softPayIntegratorId': softPayIntegratorId,
+        'softPayCredentials': softPayCredentials,
       };
 
   factory EnvironmentConfig.fromJson(Map<String, dynamic> json) {
@@ -65,6 +75,9 @@ class EnvironmentConfig {
       posUsername: json['posUsername'] as String? ?? '',
       posPassword: json['posPassword'] as String? ?? '',
       deviceType: json['deviceType'] == 'tablet' ? DeviceType.tablet : DeviceType.phone,
+      softPayEnabled: json['softPayEnabled'] as bool? ?? false,
+      softPayIntegratorId: json['softPayIntegratorId'] as String? ?? '',
+      softPayCredentials: json['softPayCredentials'] as String? ?? '',
     );
   }
 

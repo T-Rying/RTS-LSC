@@ -119,6 +119,38 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
+  void _showSoftPayDialog() {
+    final integratorIdController =
+        TextEditingController(text: _connection?.softPayIntegratorId ?? '');
+    final credentialsController =
+        TextEditingController(text: _connection?.softPayCredentials ?? '');
+
+    showCupertinoModalPopup(
+      context: context,
+      builder: (context) => _Sheet(
+        title: 'SoftPay',
+        onSave: () async {
+          if (_connection == null) return;
+          _connection!.softPayIntegratorId = integratorIdController.text.trim();
+          _connection!.softPayCredentials = credentialsController.text.trim();
+          await widget.envService.saveConnection(_connection!);
+          setState(() {});
+          if (context.mounted) Navigator.pop(context);
+        },
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text('SoftPay payment terminal credentials',
+                style: TextStyle(fontSize: 13, color: CupertinoColors.systemGrey)),
+            const SizedBox(height: 12),
+            _Field(controller: integratorIdController, placeholder: 'Integrator ID'),
+            _Field(controller: credentialsController, placeholder: 'Credentials', obscure: true),
+          ],
+        ),
+      ),
+    );
+  }
+
   void _showPosDialog() {
     final usernameController = TextEditingController(text: _connection?.posUsername ?? '');
     final passwordController = TextEditingController(text: _connection?.posPassword ?? '');
@@ -274,6 +306,67 @@ class _SettingsPageState extends State<SettingsPage> {
                       },
                     ),
             ),
+
+            const SizedBox(height: 24),
+
+            // --- SoftPay ---
+            _SectionTitle('SoftPay', 'Payment terminal'),
+            const SizedBox(height: 8),
+            if (_connection == null)
+              _Card(
+                child: const Text('Setup a connection first',
+                    style: TextStyle(color: CupertinoColors.systemGrey)),
+              )
+            else
+              _Card(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(CupertinoIcons.creditcard, color: _primaryColor, size: 20),
+                        const SizedBox(width: 10),
+                        const Text('Enable SoftPay'),
+                        const Spacer(),
+                        CupertinoSwitch(
+                          value: _connection!.softPayEnabled,
+                          activeTrackColor: _primaryColor,
+                          onChanged: (value) async {
+                            _connection!.softPayEnabled = value;
+                            await widget.envService.saveConnection(_connection!);
+                            setState(() {});
+                          },
+                        ),
+                      ],
+                    ),
+                    if (_connection!.softPayEnabled) ...[
+                      const SizedBox(height: 12),
+                      GestureDetector(
+                        onTap: _showSoftPayDialog,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            if (_connection!.softPayIntegratorId.isNotEmpty) ...[
+                              _DetailText('Integrator ID: ${_connection!.softPayIntegratorId}'),
+                              const _DetailText('Credentials: ••••••••'),
+                            ] else
+                              const Text('Tap to configure Integrator ID & Credentials',
+                                  style: TextStyle(color: CupertinoColors.systemGrey, fontSize: 13)),
+                            const SizedBox(height: 8),
+                            Row(
+                              children: [
+                                const Spacer(),
+                                const Icon(CupertinoIcons.chevron_forward,
+                                    size: 16, color: CupertinoColors.systemGrey3),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
 
             const SizedBox(height: 24),
 
