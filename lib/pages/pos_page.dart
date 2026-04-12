@@ -3,6 +3,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import '../models/environment_config.dart';
+import '../services/log_service.dart';
 
 class PosPage extends StatefulWidget {
   final EnvironmentConfig config;
@@ -15,10 +16,10 @@ class PosPage extends StatefulWidget {
 
 class _PosPageState extends State<PosPage> {
   late final WebViewController _controller;
+  final _log = LogService.instance;
   bool _loading = true;
   bool _credentialsInjected = false;
   bool _showDebug = false;
-  final List<String> _debugLogs = [];
 
   String get _posUrl {
     final tenant = Uri.encodeComponent(widget.config.tenant);
@@ -27,76 +28,116 @@ class _PosPageState extends State<PosPage> {
     return 'https://businesscentral.dynamics.com/$tenant/$company/$device';
   }
 
-  void _log(String msg) {
-    setState(() {
-      _debugLogs.add('[${DateTime.now().toString().substring(11, 19)}] $msg');
-      if (_debugLogs.length > 200) _debugLogs.removeAt(0);
-    });
-  }
-
-  /// JS that captures console.log/warn/error and window.alert, and
-  /// scans the page for any AppShell-related globals.
+  /// JS that captures console, errors, network failures, alerts, and globals.
   static const String _debugScript = '''
     (function() {
       if (window._rtslscDebug) return;
       window._rtslscDebug = true;
 
+      var D = function(msg) {
+        try { LSAppShellDebug.postMessage(msg); } catch(e) {}
+      };
+
       // Capture console
       var origLog = console.log, origWarn = console.warn, origErr = console.error;
       console.log = function() {
-        var msg = Array.from(arguments).join(' ');
-        LSAppShellDebug.postMessage('LOG: ' + msg);
+        D('LOG: ' + Array.from(arguments).join(' '));
         origLog.apply(console, arguments);
       };
       console.warn = function() {
-        var msg = Array.from(arguments).join(' ');
-        LSAppShellDebug.postMessage('WARN: ' + msg);
+        D('WARN: ' + Array.from(arguments).join(' '));
         origWarn.apply(console, arguments);
       };
       console.error = function() {
-        var msg = Array.from(arguments).join(' ');
-        LSAppShellDebug.postMessage('ERROR: ' + msg);
+        D('ERROR: ' + Array.from(arguments).join(' '));
         origErr.apply(console, arguments);
       };
 
-      // Capture uncaught errors
+      // Capture uncaught errors with full stack
       window.addEventListener('error', function(e) {
-        LSAppShellDebug.postMessage('UNCAUGHT: ' + e.message + ' at ' + e.filename + ':' + e.lineno);
+        var msg = e.message || 'Unknown error';
+        if (e.filename) msg += ' at ' + e.filename + ':' + e.lineno + ':' + e.colno;
+        if (e.error && e.error.stack) msg += '\\nStack: ' + e.error.stack;
+        D('UNCAUGHT: ' + msg);
       });
 
-      // Capture alert (likely where the error message shows)
+      // Capture unhandled promise rejections
+      window.addEventListener('unhandledrejection', function(e) {
+        var reason = e.reason;
+        var msg = 'Promise rejected: ';
+        if (reason instanceof Error) {
+          msg += reason.message + (reason.stack ? '\\nStack: ' + reason.stack : '');
+        } else {
+          try { msg += JSON.stringify(reason); } catch(ex) { msg += String(reason); }
+        }
+        D('REJECTION: ' + msg);
+      });
+
+      // Capture alert / confirm / prompt
       var origAlert = window.alert;
       window.alert = function(msg) {
-        LSAppShellDebug.postMessage('ALERT: ' + msg);
+        D('ALERT: ' + msg);
         origAlert.call(window, msg);
+      };
+      var origConfirm = window.confirm;
+      window.confirm = function(msg) {
+        D('CONFIRM: ' + msg);
+        return origConfirm.call(window, msg);
+      };
+
+      // Wrap fetch to log failures
+      var origFetch = window.fetch;
+      if (origFetch) {
+        window.fetch = function() {
+          var url = arguments[0];
+          if (typeof url === 'object' && url.url) url = url.url;
+          return origFetch.apply(this, arguments).then(function(resp) {
+            if (!resp.ok) D('FETCH FAIL: ' + resp.status + ' ' + resp.statusText + ' ' + url);
+            return resp;
+          }).catch(function(err) {
+            D('FETCH ERROR: ' + err.message + ' ' + url);
+            throw err;
+          });
+        };
+      }
+
+      // Wrap XMLHttpRequest to log failures
+      var origXhrOpen = XMLHttpRequest.prototype.open;
+      var origXhrSend = XMLHttpRequest.prototype.send;
+      XMLHttpRequest.prototype.open = function(method, url) {
+        this._rtslsc_url = method + ' ' + url;
+        return origXhrOpen.apply(this, arguments);
+      };
+      XMLHttpRequest.prototype.send = function() {
+        var xhr = this;
+        xhr.addEventListener('error', function() {
+          D('XHR ERROR: ' + (xhr._rtslsc_url || 'unknown'));
+        });
+        xhr.addEventListener('load', function() {
+          if (xhr.status >= 400) {
+            D('XHR FAIL: ' + xhr.status + ' ' + (xhr._rtslsc_url || 'unknown'));
+          }
+        });
+        return origXhrSend.apply(this, arguments);
       };
 
       // Scan for AppShell-related globals
       var scan = [];
-      var keys = ['LSAppShellDevice', 'LSAppShell', 'SendRequestToAddInEx',
-                  'OnResponseFromAddInEx', 'AppShell', 'appShell',
-                  'Microsoft', 'NAVDeviceHandler', 'DynamicsNAV'];
+      var keys = ['inAppShell', 'LSAppShellWebPOS', 'LSAppShell', 'LSAppShellAuth',
+                  'SendRequestToAddInEx', 'OnResponseFromAddInEx',
+                  'Microsoft', 'DynamicsNAV'];
       keys.forEach(function(k) {
         if (window[k] !== undefined) scan.push(k + '=' + typeof window[k]);
       });
-      if (window.Microsoft && window.Microsoft.Dynamics) {
-        scan.push('Microsoft.Dynamics exists');
-        if (window.Microsoft.Dynamics.NAV) {
-          scan.push('Microsoft.Dynamics.NAV exists');
-          var navKeys = Object.keys(window.Microsoft.Dynamics.NAV);
-          scan.push('NAV keys: ' + navKeys.join(', '));
-        }
-      }
-      LSAppShellDebug.postMessage('GLOBALS: ' + scan.join(' | '));
+      D('GLOBALS: ' + scan.join(' | '));
 
       // Scan iframes
       try {
         var frames = document.querySelectorAll('iframe');
-        LSAppShellDebug.postMessage('IFRAMES: ' + frames.length + ' found');
+        D('IFRAMES: ' + frames.length + ' found');
       } catch(e) {}
 
-      // Check user agent
-      LSAppShellDebug.postMessage('UA: ' + navigator.userAgent);
+      D('UA: ' + navigator.userAgent);
     })();
   ''';
 
@@ -111,7 +152,7 @@ class _PosPageState extends State<PosPage> {
   /// 4. window.AppshellInformation — JSON config string
   static const String _bridgeScript = '''
     (function() {
-      // Primary AppShell detection flag — checked by LSC_DeviceDialog control add-in
+      // Primary AppShell detection flag
       window.inAppShell = true;
 
       // Provide OnResponseFromAddInEx so Dart can call it to send results back
@@ -119,7 +160,7 @@ class _PosPageState extends State<PosPage> {
         window.OnResponseFromAddInEx = function(type, id, success, jsonString) {};
       }
 
-      // Also expose SendRequestToAddInEx on the top-level window as fallback
+      // Expose SendRequestToAddInEx on the top-level window as fallback
       window.SendRequestToAddInEx = function(type, id, jsonString) {
         if (window.LSAppShell) {
           LSAppShell.postMessage(JSON.stringify({
@@ -130,6 +171,67 @@ class _PosPageState extends State<PosPage> {
           }));
         }
       };
+
+      // The real AppShell registers LSAppShellWebPOS via addJavascriptInterface
+      // which exposes PascalCase methods (PostMessage, Request, Purchase, etc.).
+      // Flutter's addJavaScriptChannel only provides lowercase postMessage().
+      // We must add PascalCase aliases so the LSC_DeviceDialog control add-in
+      // and POS frontend can call them. Each method forwards to our postMessage
+      // channel and returns a default response (the real methods are synchronous).
+      function patchAppShellInterface(w) {
+        var obj = w.LSAppShellWebPOS;
+        if (!obj || obj._rtslsc_patched) return;
+        obj._rtslsc_patched = true;
+
+        var send = function(method, args) {
+          try {
+            obj.postMessage(JSON.stringify({
+              "method": method,
+              "args": Array.prototype.slice.call(args)
+            }));
+          } catch(e) {}
+          return '{}';
+        };
+
+        obj.PostMessage = function(msg) { return send('PostMessage', arguments); };
+        obj.Request = function() { return send('Request', arguments); };
+        obj.Purchase = function() { return send('Purchase', arguments); };
+        obj.Refund = function() { return send('Refund', arguments); };
+        obj.Void = function() { return send('Void', arguments); };
+        obj.Print = function() { return send('Print', arguments); };
+        obj.CameraBarcodeScanner = function() { return send('CameraBarcodeScanner', arguments); };
+        obj.cameraBarcodeScanner = function() { return send('cameraBarcodeScanner', arguments); };
+        obj.OpenDrawer = function() { return send('OpenDrawer', arguments); };
+        obj.IsDrawerOpened = function() { return send('IsDrawerOpened', arguments); };
+        obj.GetLastTransaction = function() { return send('GetLastTransaction', arguments); };
+      }
+
+      // Patch in the current frame
+      patchAppShellInterface(window);
+
+      // Also patch in any iframes (POS frontend runs in an iframe)
+      function patchIframes() {
+        try {
+          var frames = document.querySelectorAll('iframe');
+          for (var i = 0; i < frames.length; i++) {
+            try {
+              var fw = frames[i].contentWindow;
+              if (fw) {
+                fw.inAppShell = true;
+                patchAppShellInterface(fw);
+              }
+            } catch(e) {} // cross-origin
+          }
+        } catch(e) {}
+      }
+      patchIframes();
+
+      // Re-patch when new iframes appear (MutationObserver)
+      try {
+        new MutationObserver(function() { patchIframes(); })
+          .observe(document.body || document.documentElement,
+                   { childList: true, subtree: true });
+      } catch(e) {}
     })();
   ''';
 
@@ -141,6 +243,64 @@ class _PosPageState extends State<PosPage> {
           setTimeout(function() { e.target.removeAttribute('readonly'); }, 100);
         }
       }, true);
+    })();
+  ''';
+
+  /// Injects error/console capture into POS frontend iframes.
+  /// The main debug script only instruments the top frame; this reaches into
+  /// child iframes to catch errors from the actual POS SPA.
+  static const String _iframeDebugScript = '''
+    (function() {
+      function hookIframe(ifr) {
+        try {
+          var w = ifr.contentWindow;
+          if (!w || w._rtslscDebug) return;
+          w._rtslscDebug = true;
+          var D = function(msg) {
+            try { window.LSAppShellDebug.postMessage('[IFR] ' + msg); } catch(e) {}
+          };
+          w.addEventListener('error', function(e) {
+            var msg = (e.message || 'error') + (e.filename ? ' at ' + e.filename + ':' + e.lineno : '');
+            if (e.error && e.error.stack) msg += ' Stack: ' + e.error.stack;
+            D('UNCAUGHT: ' + msg);
+          });
+          w.addEventListener('unhandledrejection', function(e) {
+            var r = e.reason;
+            D('REJECTION: ' + (r instanceof Error ? r.message + (r.stack || '') : String(r)));
+          });
+          var oc = w.console;
+          if (oc) {
+            var origErr = oc.error;
+            oc.error = function() {
+              D('ERROR: ' + Array.from(arguments).join(' '));
+              if (origErr) origErr.apply(oc, arguments);
+            };
+            var origWarn = oc.warn;
+            oc.warn = function() {
+              D('WARN: ' + Array.from(arguments).join(' '));
+              if (origWarn) origWarn.apply(oc, arguments);
+            };
+          }
+          var origAlert = w.alert;
+          w.alert = function(msg) { D('ALERT: ' + msg); if (origAlert) origAlert.call(w, msg); };
+          D('iframe debug hooks installed');
+        } catch(e) {} // cross-origin
+      }
+      var frames = document.querySelectorAll('iframe');
+      for (var i = 0; i < frames.length; i++) hookIframe(frames[i]);
+      // Also hook future iframes
+      try {
+        new MutationObserver(function(muts) {
+          muts.forEach(function(m) {
+            m.addedNodes.forEach(function(n) {
+              if (n.tagName === 'IFRAME') hookIframe(n);
+              if (n.querySelectorAll) {
+                n.querySelectorAll('iframe').forEach(function(f) { hookIframe(f); });
+              }
+            });
+          });
+        }).observe(document.body || document.documentElement, { childList: true, subtree: true });
+      } catch(e) {}
     })();
   ''';
 
@@ -165,13 +325,13 @@ class _PosPageState extends State<PosPage> {
       )
       ..addJavaScriptChannel(
         'LSAppShellDebug',
-        onMessageReceived: (msg) => _log(msg.message),
+        onMessageReceived: (msg) => _onDebugMessage(msg.message),
       )
       ..setNavigationDelegate(
         NavigationDelegate(
           onPageStarted: (url) {
             setState(() => _loading = true);
-            _log('PAGE START: $url');
+            _log.info('PAGE START: $url');
             // Set AppShell flag as early as possible so BC detects it
             // before any control add-in scripts run
             if (url.contains('businesscentral.dynamics.com')) {
@@ -180,28 +340,44 @@ class _PosPageState extends State<PosPage> {
           },
           onPageFinished: (url) {
             setState(() => _loading = false);
-            _log('PAGE DONE: $url');
+            _log.info('PAGE DONE: $url');
             // Inject debug first, then bridge
             _controller.runJavaScript(_debugScript);
             if (url.contains('businesscentral.dynamics.com')) {
               _controller.runJavaScript(_bridgeScript);
               _controller.runJavaScript(_disableKeyboardScript);
-              _log('Bridge + keyboard scripts injected');
+              // Inject debug hooks into POS frontend iframe too
+              _controller.runJavaScript(_iframeDebugScript);
+              _log.debug('Bridge + keyboard + iframe debug scripts injected');
             }
             _tryInjectCredentials(url);
           },
         ),
       )
       ..setOnConsoleMessage((msg) {
-        _log('CONSOLE[${msg.level.name}]: ${msg.message}');
+        _log.debug('CONSOLE[${msg.level.name}]: ${msg.message}');
       })
       ..loadRequest(Uri.parse(_posUrl));
 
-    _log('Loading: $_posUrl');
+    _log.info('Loading: $_posUrl');
+  }
+
+  void _onDebugMessage(String msg) {
+    setState(() {}); // trigger rebuild so debug console shows new entries
+    if (msg.startsWith('ERROR:') || msg.startsWith('UNCAUGHT:') || msg.startsWith('REJECTION:')) {
+      _log.error('JS $msg');
+    } else if (msg.startsWith('WARN:') || msg.startsWith('ALERT:') || msg.startsWith('CONFIRM:')) {
+      _log.warn('JS $msg');
+    } else if (msg.startsWith('FETCH FAIL:') || msg.startsWith('FETCH ERROR:') ||
+               msg.startsWith('XHR FAIL:') || msg.startsWith('XHR ERROR:')) {
+      _log.error('JS $msg');
+    } else {
+      _log.debug('JS $msg');
+    }
   }
 
   void _onMessage(JavaScriptMessage message) {
-    _log('BRIDGE MSG: ${message.message}');
+    _log.info('BRIDGE MSG: ${message.message}');
     try {
       final msg = jsonDecode(message.message) as Map<String, dynamic>;
       if (msg['method'] == 'SendRequestToAddInEx') {
@@ -212,7 +388,7 @@ class _PosPageState extends State<PosPage> {
         );
       }
     } catch (e) {
-      _log('BRIDGE PARSE ERROR: $e');
+      _log.error('BRIDGE PARSE ERROR: $e');
     }
   }
 
@@ -220,7 +396,7 @@ class _PosPageState extends State<PosPage> {
   /// The LSC_DeviceDialog control add-in uses this to forward device requests
   /// when it detects Host == ###LSAPPSHELL.
   void _onDeviceMessage(JavaScriptMessage message) {
-    _log('DEVICE CHANNEL MSG: ${message.message}');
+    _log.info('DEVICE CHANNEL MSG: ${message.message}');
     try {
       final msg = jsonDecode(message.message) as Map<String, dynamic>;
       final method = msg['method'] as String? ?? '';
@@ -231,7 +407,6 @@ class _PosPageState extends State<PosPage> {
           data: msg['data'] as String,
         );
       } else {
-        // The control add-in may send the request in a different format
         final type = msg['type'] as String? ?? '';
         final id = msg['id'] as String? ?? '';
         final data = msg['data'] as String? ?? message.message;
@@ -240,7 +415,7 @@ class _PosPageState extends State<PosPage> {
         }
       }
     } catch (e) {
-      _log('DEVICE CHANNEL PARSE ERROR: $e');
+      _log.error('DEVICE CHANNEL PARSE ERROR: $e');
     }
   }
 
@@ -249,15 +424,15 @@ class _PosPageState extends State<PosPage> {
     required String id,
     required String data,
   }) {
-    _log('DEVICE REQ: type=$type id=$id');
+    _log.info('DEVICE REQ: type=$type id=$id');
     final json = jsonDecode(data) as Map<String, dynamic>;
     final eftSettings = json['EFTSettings'] as Map<String, dynamic>?;
     final host = eftSettings?['Host'] as String? ?? '';
-    _log('  Host=$host');
+    _log.debug('  Host=$host');
 
     final isAppShell = host == '###LSAPPSHELL';
     if (!isAppShell) {
-      _log('  Not AppShell host, ignoring');
+      _log.debug('  Not AppShell host, ignoring');
       return;
     }
 
@@ -281,7 +456,7 @@ class _PosPageState extends State<PosPage> {
         if (type.startsWith('EFT:')) {
           _handleEftRequest(id, json);
         } else {
-          _log('  Unknown type: $type');
+          _log.warn('  Unknown type: $type');
         }
         break;
     }
@@ -289,7 +464,7 @@ class _PosPageState extends State<PosPage> {
 
   void _handleEftRequest(String id, Map<String, dynamic> json) {
     final command = json['Command'] as String? ?? 'Purchase';
-    _log('EFT REQ: command=$command');
+    _log.info('EFT REQ: command=$command');
 
     if (!widget.config.softPayEnabled) {
       _sendResponseToBC(
@@ -308,7 +483,7 @@ class _PosPageState extends State<PosPage> {
         ? (totalAmount * 100).round()
         : int.tryParse(totalAmount.toString()) ?? 0;
 
-    _log('  Amount=$totalAmount ($amountMinor minor) $currencyCode ref=$transactionId');
+    _log.info('  Amount=$totalAmount ($amountMinor minor) $currencyCode ref=$transactionId');
 
     final params = {
       'integrator_id': widget.config.softPayIntegratorId,
@@ -320,15 +495,18 @@ class _PosPageState extends State<PosPage> {
     };
 
     final uri = Uri(scheme: 'softpay', host: 'payment', queryParameters: params);
-    _log('  Launching: $uri');
+    _log.info('  Launching: $uri');
 
     launchUrl(uri, mode: LaunchMode.externalApplication).then((launched) {
       if (!launched) {
-        _log('  SoftPay launch FAILED');
+        _log.error('  SoftPay launch FAILED');
         _sendResponseToBC(type: command, id: id, success: false, data: 'Could not launch SoftPay app');
       } else {
-        _log('  SoftPay launched OK');
+        _log.info('  SoftPay launched OK');
       }
+    }).catchError((e) {
+      _log.error('  SoftPay launch exception: $e');
+      _sendResponseToBC(type: command, id: id, success: false, data: 'SoftPay error: $e');
     });
   }
 
@@ -338,7 +516,7 @@ class _PosPageState extends State<PosPage> {
     required bool success,
     required String data,
   }) async {
-    _log('RESPONSE: type=$type id=$id success=$success');
+    _log.info('RESPONSE: type=$type id=$id success=$success');
     final escapedData = data.replaceAll('\\', '\\\\').replaceAll("'", "\\'");
     // Deliver to main frame and also try all iframes (control add-in context)
     await _controller.runJavaScript('''
@@ -380,7 +558,7 @@ class _PosPageState extends State<PosPage> {
     final safePass = password.replaceAll("'", "\\'");
 
     if (url.contains('login.microsoftonline.com') || url.contains('login.live.com')) {
-      _log('Injecting login credentials');
+      _log.info('Injecting login credentials');
       await _controller.runJavaScript('''
         (function() {
           var emailInput = document.querySelector('input[name="loginfmt"]');
@@ -431,10 +609,15 @@ class _PosPageState extends State<PosPage> {
             ),
             CupertinoButton(
               padding: EdgeInsets.zero,
+              child: const Icon(CupertinoIcons.paperplane),
+              onPressed: () => _log.share(),
+            ),
+            CupertinoButton(
+              padding: EdgeInsets.zero,
               child: const Icon(CupertinoIcons.refresh),
               onPressed: () {
                 _credentialsInjected = false;
-                _debugLogs.clear();
+                _log.clear();
                 _controller.reload();
               },
             ),
@@ -471,7 +654,7 @@ class _PosPageState extends State<PosPage> {
                           padding: const EdgeInsets.all(8),
                           minSize: 0,
                           child: const Text('Clear', style: TextStyle(color: CupertinoColors.activeOrange, fontSize: 12)),
-                          onPressed: () => setState(() => _debugLogs.clear()),
+                          onPressed: () => setState(() => _log.clear()),
                         ),
                       ],
                     ),
@@ -479,18 +662,19 @@ class _PosPageState extends State<PosPage> {
                       child: ListView.builder(
                         reverse: true,
                         padding: const EdgeInsets.symmetric(horizontal: 8),
-                        itemCount: _debugLogs.length,
+                        itemCount: _log.length,
                         itemBuilder: (_, i) {
-                          final log = _debugLogs[_debugLogs.length - 1 - i];
+                          final logs = _log.logs;
+                          final entry = logs[logs.length - 1 - i];
                           Color color = CupertinoColors.systemGrey2;
-                          if (log.contains('ERROR') || log.contains('UNCAUGHT') || log.contains('FAILED')) {
+                          if (entry.contains('ERR ') || entry.contains('ERROR') || entry.contains('UNCAUGHT') || entry.contains('FAILED')) {
                             color = CupertinoColors.systemRed;
-                          } else if (log.contains('WARN') || log.contains('ALERT')) {
+                          } else if (entry.contains('WRN ') || entry.contains('WARN') || entry.contains('ALERT')) {
                             color = CupertinoColors.systemOrange;
-                          } else if (log.contains('BRIDGE') || log.contains('DEVICE REQ')) {
+                          } else if (entry.contains('BRIDGE') || entry.contains('DEVICE REQ') || entry.contains('DEVICE CHANNEL')) {
                             color = CupertinoColors.systemGreen;
                           }
-                          return Text(log, style: TextStyle(color: color, fontSize: 11, fontFamily: 'Courier'));
+                          return Text(entry, style: TextStyle(color: color, fontSize: 11, fontFamily: 'Courier'));
                         },
                       ),
                     ),
