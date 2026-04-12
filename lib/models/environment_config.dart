@@ -4,19 +4,31 @@ enum ConnectionType { onPremise, saas }
 
 class EnvironmentConfig {
   ConnectionType type;
+  // On-Premise fields
   String serverUrl;
   String instance;
-  String tenant;
-  String company;
   int port;
+  // SaaS fields
+  String tenant;
+  String clientId;
+  String clientSecret;
+  // Shared
+  String company;
+  // POS credentials
+  String posUsername;
+  String posPassword;
 
   EnvironmentConfig({
     required this.type,
-    required this.serverUrl,
+    this.serverUrl = '',
     this.instance = '',
-    this.tenant = '',
-    this.company = '',
     this.port = 7048,
+    this.tenant = '',
+    this.clientId = '',
+    this.clientSecret = '',
+    this.company = '',
+    this.posUsername = '',
+    this.posPassword = '',
   });
 
   String get displayName => type == ConnectionType.saas ? 'SaaS' : 'On-Premise';
@@ -25,19 +37,27 @@ class EnvironmentConfig {
         'type': type.name,
         'serverUrl': serverUrl,
         'instance': instance,
-        'tenant': tenant,
-        'company': company,
         'port': port,
+        'tenant': tenant,
+        'clientId': clientId,
+        'clientSecret': clientSecret,
+        'company': company,
+        'posUsername': posUsername,
+        'posPassword': posPassword,
       };
 
   factory EnvironmentConfig.fromJson(Map<String, dynamic> json) {
     return EnvironmentConfig(
       type: json['type'] == 'saas' ? ConnectionType.saas : ConnectionType.onPremise,
-      serverUrl: json['serverUrl'] as String,
+      serverUrl: json['serverUrl'] as String? ?? '',
       instance: json['instance'] as String? ?? '',
-      tenant: json['tenant'] as String? ?? '',
-      company: json['company'] as String? ?? '',
       port: json['port'] as int? ?? 7048,
+      tenant: json['tenant'] as String? ?? '',
+      clientId: json['clientId'] as String? ?? '',
+      clientSecret: json['clientSecret'] as String? ?? '',
+      company: json['company'] as String? ?? '',
+      posUsername: json['posUsername'] as String? ?? '',
+      posPassword: json['posPassword'] as String? ?? '',
     );
   }
 

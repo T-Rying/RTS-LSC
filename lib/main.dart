@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'models/environment_config.dart';
 import 'pages/settings_page.dart';
 import 'services/environment_service.dart';
 
@@ -66,7 +67,9 @@ class HomePage extends StatelessWidget {
               Padding(
                 padding: const EdgeInsets.only(bottom: 24),
                 child: Text(
-                  '${connection.displayName}: ${connection.serverUrl}',
+                  connection.type == ConnectionType.saas
+                      ? 'SaaS: ${connection.tenant}'
+                      : 'On-Premise: ${connection.serverUrl}',
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     fontSize: 14,
