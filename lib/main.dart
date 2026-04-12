@@ -33,7 +33,7 @@ class HomePage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final activeEnv = environmentService.getActiveEnvironment();
+    final connection = environmentService.getConnection();
 
     return Scaffold(
       appBar: AppBar(
@@ -62,11 +62,11 @@ class HomePage extends StatelessWidget {
           mainAxisAlignment: MainAxisAlignment.center,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            if (activeEnv != null)
+            if (connection != null)
               Padding(
                 padding: const EdgeInsets.only(bottom: 24),
                 child: Text(
-                  'Connected to: $activeEnv',
+                  '${connection.displayName}: ${connection.serverUrl}',
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     fontSize: 14,
@@ -74,11 +74,11 @@ class HomePage extends StatelessWidget {
                   ),
                 ),
               ),
-            if (activeEnv == null)
+            if (connection == null)
               Padding(
                 padding: const EdgeInsets.only(bottom: 24),
                 child: Text(
-                  'No environment configured — tap the settings icon',
+                  'No connection configured — tap the settings icon',
                   textAlign: TextAlign.center,
                   style: TextStyle(fontSize: 14, color: Colors.orange[700]),
                 ),

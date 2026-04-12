@@ -17,5 +17,6 @@ void main() {
     expect(find.text('Mobile Inventory'), findsOneWidget);
     expect(find.text('Hospitality'), findsOneWidget);
     expect(find.byIcon(Icons.settings), findsOneWidget);
+    expect(find.text('No connection configured — tap the settings icon'), findsOneWidget);
   });
 }
