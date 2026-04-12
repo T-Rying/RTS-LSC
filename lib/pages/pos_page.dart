@@ -100,14 +100,20 @@ class _PosPageState extends State<PosPage> {
     })();
   ''';
 
-  /// JS bridge for LSC_DeviceDialog control add-in protocol.
-  /// The LSC_DeviceDialog control add-in runs in its own iframe and checks
-  /// for window.LSAppShellDevice to detect AppShell. We register it as a
-  /// JavaScript channel (addJavascriptInterface) so it's available in ALL
-  /// frames before any script runs. This script enriches it with helper
-  /// methods for the main frame and provides the SendRequestToAddInEx shim.
+  /// JS bridge that makes the BC web client believe it's running inside the
+  /// real LS AppShell. Decompilation of the real AppShell APK revealed:
+  ///
+  /// 1. window.inAppShell = true  — the primary detection flag
+  /// 2. window.LSAppShellWebPOS   — native interface (addJavascriptInterface)
+  ///    with methods: PostMessage, Request, Purchase, Refund, Void, Print,
+  ///    CameraBarcodeScanner, OpenDrawer, IsDrawerOpened, GetLastTransaction
+  /// 3. window.LSAppShellAuth     — secondary interface for auth HTML processing
+  /// 4. window.AppshellInformation — JSON config string
   static const String _bridgeScript = '''
     (function() {
+      // Primary AppShell detection flag — checked by LSC_DeviceDialog control add-in
+      window.inAppShell = true;
+
       // Provide OnResponseFromAddInEx so Dart can call it to send results back
       if (!window.OnResponseFromAddInEx) {
         window.OnResponseFromAddInEx = function(type, id, success, jsonString) {};
@@ -148,13 +154,13 @@ class _PosPageState extends State<PosPage> {
         'LSAppShell',
         onMessageReceived: _onMessage,
       )
-      // LSAppShellDevice channel is the key detection mechanism.
-      // The LSC_DeviceDialog control add-in (in its own iframe) checks for
-      // window.LSAppShellDevice to determine if it's running inside AppShell.
-      // Using addJavaScriptChannel (backed by addJavascriptInterface on Android)
-      // makes this available in ALL frames before any page script runs.
+      // LSAppShellWebPOS is the native interface name used by the real LS AppShell
+      // (found by decompiling the official APK). The LSC_DeviceDialog control
+      // add-in calls methods on window.LSAppShellWebPOS (PostMessage, Request,
+      // Purchase, etc.) to communicate with the host app.
+      // addJavaScriptChannel makes this available in ALL frames via addJavascriptInterface.
       ..addJavaScriptChannel(
-        'LSAppShellDevice',
+        'LSAppShellWebPOS',
         onMessageReceived: _onDeviceMessage,
       )
       ..addJavaScriptChannel(
@@ -166,6 +172,11 @@ class _PosPageState extends State<PosPage> {
           onPageStarted: (url) {
             setState(() => _loading = true);
             _log('PAGE START: $url');
+            // Set AppShell flag as early as possible so BC detects it
+            // before any control add-in scripts run
+            if (url.contains('businesscentral.dynamics.com')) {
+              _controller.runJavaScript('window.inAppShell = true;');
+            }
           },
           onPageFinished: (url) {
             setState(() => _loading = false);
