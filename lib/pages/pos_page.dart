@@ -359,21 +359,19 @@ class _PosPageState extends State<PosPage> {
           onPageStarted: (url) {
             setState(() => _loading = true);
             _log.info('PAGE START: $url');
-            // Set AppShell flag as early as possible so BC detects it
-            // before any control add-in scripts run
-            if (url.contains('businesscentral.dynamics.com')) {
-              _controller.runJavaScript('window.inAppShell = true;');
-            }
+            // Inject bridge on EVERY page start — critical for the EFT dialog
+            // which opens as a new page/window and needs the PascalCase method
+            // aliases on LSAppShellWebPOS before the control add-in loads.
+            _controller.runJavaScript(_bridgeScript);
           },
           onPageFinished: (url) {
             setState(() => _loading = false);
             _log.info('PAGE DONE: $url');
-            // Inject debug first, then bridge
+            // Re-inject everything on page finish (belt and suspenders)
             _controller.runJavaScript(_debugScript);
+            _controller.runJavaScript(_bridgeScript);
             if (url.contains('businesscentral.dynamics.com')) {
-              _controller.runJavaScript(_bridgeScript);
               _controller.runJavaScript(_disableKeyboardScript);
-              // Inject debug hooks into POS frontend iframe too
               _controller.runJavaScript(_iframeDebugScript);
               _log.debug('Bridge + keyboard + iframe debug scripts injected');
             }
