@@ -155,6 +155,10 @@ class _PosPageState extends State<PosPage> {
       // Primary AppShell detection flag
       window.inAppShell = true;
 
+      var D = function(msg) {
+        try { LSAppShellDebug.postMessage('[BRIDGE] ' + msg); } catch(e) {}
+      };
+
       // Provide OnResponseFromAddInEx so Dart can call it to send results back
       if (!window.OnResponseFromAddInEx) {
         window.OnResponseFromAddInEx = function(type, id, success, jsonString) {};
@@ -162,6 +166,7 @@ class _PosPageState extends State<PosPage> {
 
       // Expose SendRequestToAddInEx on the top-level window as fallback
       window.SendRequestToAddInEx = function(type, id, jsonString) {
+        D('SendRequestToAddInEx called: type=' + type + ' id=' + id);
         if (window.LSAppShell) {
           LSAppShell.postMessage(JSON.stringify({
             "method": "SendRequestToAddInEx",
@@ -172,24 +177,25 @@ class _PosPageState extends State<PosPage> {
         }
       };
 
-      // The real AppShell registers LSAppShellWebPOS via addJavascriptInterface
-      // which exposes PascalCase methods (PostMessage, Request, Purchase, etc.).
+      // PascalCase method aliases for LSAppShellWebPOS.
+      // The real AppShell's addJavascriptInterface exposes PascalCase methods
+      // (PostMessage, Request, Purchase, etc.) that return String synchronously.
       // Flutter's addJavaScriptChannel only provides lowercase postMessage().
-      // We must add PascalCase aliases so the LSC_DeviceDialog control add-in
-      // and POS frontend can call them. Each method forwards to our postMessage
-      // channel and returns a default response (the real methods are synchronous).
       function patchAppShellInterface(w) {
         var obj = w.LSAppShellWebPOS;
         if (!obj || obj._rtslsc_patched) return;
         obj._rtslsc_patched = true;
 
         var send = function(method, args) {
+          D('LSAppShellWebPOS.' + method + '(' + Array.prototype.slice.call(args).map(function(a) {
+            return typeof a === 'string' ? a.substring(0, 200) : String(a);
+          }).join(', ') + ')');
           try {
             obj.postMessage(JSON.stringify({
               "method": method,
               "args": Array.prototype.slice.call(args)
             }));
-          } catch(e) {}
+          } catch(e) { D('postMessage error: ' + e); }
           return '{}';
         };
 
@@ -204,34 +210,37 @@ class _PosPageState extends State<PosPage> {
         obj.OpenDrawer = function() { return send('OpenDrawer', arguments); };
         obj.IsDrawerOpened = function() { return send('IsDrawerOpened', arguments); };
         obj.GetLastTransaction = function() { return send('GetLastTransaction', arguments); };
+        D('patched LSAppShellWebPOS in frame');
       }
 
-      // Patch in the current frame
       patchAppShellInterface(window);
 
-      // Also patch in any iframes (POS frontend runs in an iframe)
-      function patchIframes() {
-        try {
-          var frames = document.querySelectorAll('iframe');
-          for (var i = 0; i < frames.length; i++) {
-            try {
-              var fw = frames[i].contentWindow;
-              if (fw) {
-                fw.inAppShell = true;
-                patchAppShellInterface(fw);
-              }
-            } catch(e) {} // cross-origin
-          }
-        } catch(e) {}
+      // Deep-scan ALL iframes including nested ones
+      function deepPatchAllFrames() {
+        function walk(w) {
+          try {
+            w.inAppShell = true;
+            patchAppShellInterface(w);
+            // Also recurse into sub-iframes
+            for (var i = 0; i < w.frames.length; i++) {
+              try { walk(w.frames[i]); } catch(e) {}
+            }
+          } catch(e) {} // cross-origin
+        }
+        walk(window);
       }
-      patchIframes();
+      deepPatchAllFrames();
 
-      // Re-patch when new iframes appear (MutationObserver)
+      // MutationObserver for new iframes
       try {
-        new MutationObserver(function() { patchIframes(); })
+        new MutationObserver(function() { deepPatchAllFrames(); })
           .observe(document.body || document.documentElement,
                    { childList: true, subtree: true });
       } catch(e) {}
+
+      // Periodic scan as safety net — BC creates control add-in iframes
+      // dynamically and they may not trigger MutationObserver reliably.
+      setInterval(deepPatchAllFrames, 1000);
     })();
   ''';
 
@@ -246,61 +255,79 @@ class _PosPageState extends State<PosPage> {
     })();
   ''';
 
-  /// Injects error/console capture into POS frontend iframes.
-  /// The main debug script only instruments the top frame; this reaches into
-  /// child iframes to catch errors from the actual POS SPA.
+  /// Injects error/console capture into ALL iframes including dynamically
+  /// created control add-in frames. Uses both MutationObserver and periodic
+  /// scanning since BC's dialog framework may create iframes in ways that
+  /// don't trigger mutation events.
   static const String _iframeDebugScript = '''
     (function() {
-      function hookIframe(ifr) {
+      var D = function(msg) {
+        try { window.LSAppShellDebug.postMessage('[IFR] ' + msg); } catch(e) {}
+      };
+
+      function hookWindow(w, depth) {
         try {
-          var w = ifr.contentWindow;
-          if (!w || w._rtslscDebug) return;
+          if (w._rtslscDebug) return;
           w._rtslscDebug = true;
-          var D = function(msg) {
-            try { window.LSAppShellDebug.postMessage('[IFR] ' + msg); } catch(e) {}
+          var tag = depth > 0 ? '[IFR-L' + depth + '] ' : '[IFR] ';
+          var Df = function(msg) {
+            try { window.LSAppShellDebug.postMessage(tag + msg); } catch(e) {}
           };
           w.addEventListener('error', function(e) {
             var msg = (e.message || 'error') + (e.filename ? ' at ' + e.filename + ':' + e.lineno : '');
             if (e.error && e.error.stack) msg += ' Stack: ' + e.error.stack;
-            D('UNCAUGHT: ' + msg);
+            Df('UNCAUGHT: ' + msg);
           });
           w.addEventListener('unhandledrejection', function(e) {
             var r = e.reason;
-            D('REJECTION: ' + (r instanceof Error ? r.message + (r.stack || '') : String(r)));
+            Df('REJECTION: ' + (r instanceof Error ? r.message + (r.stack || '') : String(r)));
           });
           var oc = w.console;
           if (oc) {
             var origErr = oc.error;
             oc.error = function() {
-              D('ERROR: ' + Array.from(arguments).join(' '));
+              Df('ERROR: ' + Array.from(arguments).join(' '));
               if (origErr) origErr.apply(oc, arguments);
             };
             var origWarn = oc.warn;
             oc.warn = function() {
-              D('WARN: ' + Array.from(arguments).join(' '));
+              Df('WARN: ' + Array.from(arguments).join(' '));
               if (origWarn) origWarn.apply(oc, arguments);
+            };
+            var origLog = oc.log;
+            oc.log = function() {
+              Df('LOG: ' + Array.from(arguments).join(' '));
+              if (origLog) origLog.apply(oc, arguments);
             };
           }
           var origAlert = w.alert;
-          w.alert = function(msg) { D('ALERT: ' + msg); if (origAlert) origAlert.call(w, msg); };
-          D('iframe debug hooks installed');
+          w.alert = function(msg) { Df('ALERT: ' + msg); if (origAlert) origAlert.call(w, msg); };
+          Df('debug hooks installed (depth=' + depth + ')');
         } catch(e) {} // cross-origin
       }
-      var frames = document.querySelectorAll('iframe');
-      for (var i = 0; i < frames.length; i++) hookIframe(frames[i]);
-      // Also hook future iframes
+
+      function deepScanFrames() {
+        function walk(w, depth) {
+          try {
+            hookWindow(w, depth);
+            for (var i = 0; i < w.frames.length; i++) {
+              try { walk(w.frames[i], depth + 1); } catch(e) {}
+            }
+          } catch(e) {}
+        }
+        // Start from top and walk all frames
+        walk(window, 0);
+      }
+      deepScanFrames();
+
+      // MutationObserver
       try {
-        new MutationObserver(function(muts) {
-          muts.forEach(function(m) {
-            m.addedNodes.forEach(function(n) {
-              if (n.tagName === 'IFRAME') hookIframe(n);
-              if (n.querySelectorAll) {
-                n.querySelectorAll('iframe').forEach(function(f) { hookIframe(f); });
-              }
-            });
-          });
-        }).observe(document.body || document.documentElement, { childList: true, subtree: true });
+        new MutationObserver(function() { deepScanFrames(); })
+          .observe(document.body || document.documentElement, { childList: true, subtree: true });
       } catch(e) {}
+
+      // Periodic scan every 500ms — catches BC dialog iframes
+      setInterval(deepScanFrames, 500);
     })();
   ''';
 
