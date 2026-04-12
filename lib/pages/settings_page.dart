@@ -186,6 +186,7 @@ class _SettingsPageState extends State<SettingsPage> {
                   company: companyController.text.trim(),
                   posUsername: existing?.posUsername ?? '',
                   posPassword: existing?.posPassword ?? '',
+                  deviceType: existing?.deviceType ?? DeviceType.phone,
                 );
 
                 await widget.envService.saveConnection(config);
@@ -368,6 +369,57 @@ class _SettingsPageState extends State<SettingsPage> {
                     if (_connection!.company.isNotEmpty)
                       _DetailRow('Company', _connection!.company),
                   ],
+                ),
+              ),
+            ),
+
+          const SizedBox(height: 24),
+
+          // --- Device Type section ---
+          _SectionHeader(
+            icon: Icons.devices,
+            title: 'Device Type',
+            subtitle: 'POS layout',
+          ),
+          const SizedBox(height: 8),
+          if (_connection == null)
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Text(
+                  'Setup an API connection first',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 14, color: Colors.grey[500]),
+                ),
+              ),
+            )
+          else
+            Card(
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+                side: BorderSide(color: theme.colorScheme.primary, width: 2),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: SegmentedButton<DeviceType>(
+                  segments: const [
+                    ButtonSegment(
+                      value: DeviceType.phone,
+                      label: Text('Phone'),
+                      icon: Icon(Icons.smartphone),
+                    ),
+                    ButtonSegment(
+                      value: DeviceType.tablet,
+                      label: Text('Tablet'),
+                      icon: Icon(Icons.tablet),
+                    ),
+                  ],
+                  selected: {_connection!.deviceType},
+                  onSelectionChanged: (selection) async {
+                    _connection!.deviceType = selection.first;
+                    await widget.envService.saveConnection(_connection!);
+                    setState(() {});
+                  },
                 ),
               ),
             ),

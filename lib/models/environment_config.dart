@@ -2,6 +2,8 @@ import 'dart:convert';
 
 enum ConnectionType { onPremise, saas }
 
+enum DeviceType { phone, tablet }
+
 class EnvironmentConfig {
   ConnectionType type;
   // On-Premise fields
@@ -17,6 +19,8 @@ class EnvironmentConfig {
   // POS credentials
   String posUsername;
   String posPassword;
+  // Device type
+  DeviceType deviceType;
 
   EnvironmentConfig({
     required this.type,
@@ -29,6 +33,7 @@ class EnvironmentConfig {
     this.company = '',
     this.posUsername = '',
     this.posPassword = '',
+    required this.deviceType,
   });
 
   String get displayName => type == ConnectionType.saas ? 'SaaS' : 'On-Premise';
@@ -44,6 +49,7 @@ class EnvironmentConfig {
         'company': company,
         'posUsername': posUsername,
         'posPassword': posPassword,
+        'deviceType': deviceType.name,
       };
 
   factory EnvironmentConfig.fromJson(Map<String, dynamic> json) {
@@ -58,6 +64,7 @@ class EnvironmentConfig {
       company: json['company'] as String? ?? '',
       posUsername: json['posUsername'] as String? ?? '',
       posPassword: json['posPassword'] as String? ?? '',
+      deviceType: json['deviceType'] == 'tablet' ? DeviceType.tablet : DeviceType.phone,
     );
   }
 

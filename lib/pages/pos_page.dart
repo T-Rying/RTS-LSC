@@ -19,7 +19,8 @@ class _PosPageState extends State<PosPage> {
   String get _posUrl {
     final tenant = Uri.encodeComponent(widget.config.tenant);
     final company = Uri.encodeComponent(widget.config.company);
-    return 'https://businesscentral.dynamics.com/$tenant/$company';
+    final device = widget.config.deviceType == DeviceType.tablet ? 'tablet' : 'phone';
+    return 'https://businesscentral.dynamics.com/$tenant/$company/$device';
   }
 
   @override
