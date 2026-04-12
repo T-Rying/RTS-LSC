@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/environment_config.dart';
 import '../services/environment_service.dart';
+import 'qr_scanner_page.dart';
 
 class SettingsPage extends StatefulWidget {
   final EnvironmentService envService;
@@ -31,6 +32,23 @@ class _SettingsPageState extends State<SettingsPage> {
   void _deleteConnection() async {
     await widget.envService.deleteConnection();
     setState(() => _connection = null);
+  }
+
+  void _scanQrCode() async {
+    final result = await Navigator.push<EnvironmentConfig>(
+      context,
+      MaterialPageRoute(builder: (_) => const QrScannerPage()),
+    );
+    if (result == null) return;
+
+    // Preserve existing POS credentials if present
+    if (_connection != null) {
+      result.posUsername = _connection!.posUsername;
+      result.posPassword = _connection!.posPassword;
+    }
+
+    await widget.envService.saveConnection(result);
+    setState(() => _connection = result);
   }
 
   void _showConnectionDialog(EnvironmentConfig? existing) {
@@ -251,6 +269,13 @@ class _SettingsPageState extends State<SettingsPage> {
         title: const Text('Settings'),
         backgroundColor: theme.colorScheme.primary,
         foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.qr_code_scanner),
+            tooltip: 'Scan QR Code',
+            onPressed: _scanQrCode,
+          ),
+        ],
       ),
       body: ListView(
         padding: const EdgeInsets.all(16),
@@ -278,7 +303,13 @@ class _SettingsPageState extends State<SettingsPage> {
                     FilledButton.icon(
                       onPressed: _editConnection,
                       icon: const Icon(Icons.add),
-                      label: const Text('Setup Connection'),
+                      label: const Text('Setup Manually'),
+                    ),
+                    const SizedBox(height: 8),
+                    OutlinedButton.icon(
+                      onPressed: _scanQrCode,
+                      icon: const Icon(Icons.qr_code_scanner),
+                      label: const Text('Scan QR Code'),
                     ),
                   ],
                 ),
