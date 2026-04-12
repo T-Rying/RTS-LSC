@@ -101,8 +101,19 @@ class _PosPageState extends State<PosPage> {
   ''';
 
   /// JS bridge for LSC_DeviceDialog control add-in protocol.
+  /// The LSC_DeviceDialog control add-in runs in its own iframe and checks
+  /// for window.LSAppShellDevice to detect AppShell. We register it as a
+  /// JavaScript channel (addJavascriptInterface) so it's available in ALL
+  /// frames before any script runs. This script enriches it with helper
+  /// methods for the main frame and provides the SendRequestToAddInEx shim.
   static const String _bridgeScript = '''
     (function() {
+      // Provide OnResponseFromAddInEx so Dart can call it to send results back
+      if (!window.OnResponseFromAddInEx) {
+        window.OnResponseFromAddInEx = function(type, id, success, jsonString) {};
+      }
+
+      // Also expose SendRequestToAddInEx on the top-level window as fallback
       window.SendRequestToAddInEx = function(type, id, jsonString) {
         if (window.LSAppShell) {
           LSAppShell.postMessage(JSON.stringify({
@@ -113,10 +124,6 @@ class _PosPageState extends State<PosPage> {
           }));
         }
       };
-
-      if (!window.OnResponseFromAddInEx) {
-        window.OnResponseFromAddInEx = function(type, id, success, jsonString) {};
-      }
     })();
   ''';
 
@@ -140,6 +147,15 @@ class _PosPageState extends State<PosPage> {
       ..addJavaScriptChannel(
         'LSAppShell',
         onMessageReceived: _onMessage,
+      )
+      // LSAppShellDevice channel is the key detection mechanism.
+      // The LSC_DeviceDialog control add-in (in its own iframe) checks for
+      // window.LSAppShellDevice to determine if it's running inside AppShell.
+      // Using addJavaScriptChannel (backed by addJavascriptInterface on Android)
+      // makes this available in ALL frames before any page script runs.
+      ..addJavaScriptChannel(
+        'LSAppShellDevice',
+        onMessageReceived: _onDeviceMessage,
       )
       ..addJavaScriptChannel(
         'LSAppShellDebug',
@@ -186,6 +202,34 @@ class _PosPageState extends State<PosPage> {
       }
     } catch (e) {
       _log('BRIDGE PARSE ERROR: $e');
+    }
+  }
+
+  /// Handles messages from the LSAppShellDevice channel.
+  /// The LSC_DeviceDialog control add-in uses this to forward device requests
+  /// when it detects Host == ###LSAPPSHELL.
+  void _onDeviceMessage(JavaScriptMessage message) {
+    _log('DEVICE CHANNEL MSG: ${message.message}');
+    try {
+      final msg = jsonDecode(message.message) as Map<String, dynamic>;
+      final method = msg['method'] as String? ?? '';
+      if (method == 'SendRequestToAddInEx') {
+        _handleDeviceRequest(
+          type: msg['type'] as String,
+          id: msg['id'] as String,
+          data: msg['data'] as String,
+        );
+      } else {
+        // The control add-in may send the request in a different format
+        final type = msg['type'] as String? ?? '';
+        final id = msg['id'] as String? ?? '';
+        final data = msg['data'] as String? ?? message.message;
+        if (type.isNotEmpty) {
+          _handleDeviceRequest(type: type, id: id, data: data);
+        }
+      }
+    } catch (e) {
+      _log('DEVICE CHANNEL PARSE ERROR: $e');
     }
   }
 
@@ -285,9 +329,34 @@ class _PosPageState extends State<PosPage> {
   }) async {
     _log('RESPONSE: type=$type id=$id success=$success');
     final escapedData = data.replaceAll('\\', '\\\\').replaceAll("'", "\\'");
-    await _controller.runJavaScript(
-      "window.OnResponseFromAddInEx('$type', '$id', $success, '$escapedData');",
-    );
+    // Deliver to main frame and also try all iframes (control add-in context)
+    await _controller.runJavaScript('''
+      (function() {
+        var args = ['$type', '$id', $success, '$escapedData'];
+        // Main frame
+        if (window.OnResponseFromAddInEx) {
+          try { window.OnResponseFromAddInEx.apply(null, args); } catch(e) {}
+        }
+        // Control add-in iframes
+        try {
+          var frames = document.querySelectorAll('iframe');
+          for (var i = 0; i < frames.length; i++) {
+            try {
+              var w = frames[i].contentWindow;
+              if (w && w.OnResponseFromAddInEx) {
+                w.OnResponseFromAddInEx.apply(null, args);
+              }
+              // Also try the BC extensibility method in iframes
+              if (w && w.Microsoft && w.Microsoft.Dynamics && w.Microsoft.Dynamics.NAV &&
+                  w.Microsoft.Dynamics.NAV.InvokeExtensibilityMethod) {
+                w.Microsoft.Dynamics.NAV.InvokeExtensibilityMethod(
+                  'OnResponseFromAddInEx', args);
+              }
+            } catch(e) {} // cross-origin frames will throw
+          }
+        } catch(e) {}
+      })();
+    ''');
   }
 
   Future<void> _tryInjectCredentials(String url) async {

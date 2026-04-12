@@ -62,3 +62,10 @@ flutter emulators --launch Medium_Phone_API_36.1  # start Android emulator
 - `shared_preferences` — persisting connection settings
 - `mobile_scanner` — QR code scanning for setup
 - `cupertino_icons` — iOS-style icons
+
+## SoftPay Developer information
+
+- https://developer.softpay.io/softpay/?p=introduction#introduction
+
+## LS Central Source Code
+Used for finding how to receive the payment request from LS Central. LS Central uses ###LSAPPSHELL to indicate if a hardware station uses the app. 
