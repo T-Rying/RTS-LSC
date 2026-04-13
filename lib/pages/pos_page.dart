@@ -473,18 +473,26 @@ class _PosPageState extends State<PosPage> {
         final args = msg['args'] as List<dynamic>? ?? [];
         final type = args.isNotEmpty ? args[0].toString() : '';
         final jsonData = args.length > 1 ? args[1].toString() : '{}';
-        // Extract the Command from JSON to use as type if the first arg is generic
+        // Extract Command and TransactionId from JSON.
+        // LS Central uses EFTJobID = "RequestType:TransactionId" as the
+        // correlation ID that must be echoed back in OnResponseFromAddInEx.
         String resolvedType = type;
+        String correlationId = type;
         try {
           final parsed = jsonDecode(jsonData) as Map<String, dynamic>;
           final command = parsed['Command'] as String?;
+          final txnId = parsed['TransactionId'] as String? ?? '';
           if (command != null && command.isNotEmpty) {
             resolvedType = command;
           }
+          // Build correlation ID matching LS Central's EFTJobID format
+          correlationId = txnId.isNotEmpty
+              ? '$resolvedType:$txnId'
+              : resolvedType;
         } catch (_) {}
         _handleDeviceRequest(
           type: resolvedType,
-          id: type, // The type string serves as correlation ID
+          id: correlationId,
           data: jsonData,
         );
       } else if (method == 'PostMessage') {
