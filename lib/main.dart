@@ -1,19 +1,33 @@
+import 'dart:async';
 import 'package:flutter/cupertino.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'models/environment_config.dart';
 import 'pages/pos_page.dart';
 import 'pages/settings_page.dart';
 import 'services/environment_service.dart';
+import 'services/log_service.dart';
 
 late EnvironmentService environmentService;
 
 const Color _primaryColor = Color(0xFF003366);
 
 void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  final prefs = await SharedPreferences.getInstance();
-  environmentService = EnvironmentService(prefs);
-  runApp(const MyApp());
+  runZonedGuarded(() async {
+    WidgetsFlutterBinding.ensureInitialized();
+
+    FlutterError.onError = (details) {
+      LogService.instance.error(
+        'Flutter error: ${details.exceptionAsString()}\n${details.stack}',
+      );
+    };
+
+    final prefs = await SharedPreferences.getInstance();
+    environmentService = EnvironmentService(prefs);
+    LogService.instance.info('App started');
+    runApp(const MyApp());
+  }, (error, stack) {
+    LogService.instance.error('Uncaught Dart error: $error\n$stack');
+  });
 }
 
 class MyApp extends StatelessWidget {

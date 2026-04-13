@@ -1,9 +1,9 @@
 import 'dart:convert';
 import 'package:flutter/cupertino.dart';
-import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import '../models/environment_config.dart';
 import '../services/log_service.dart';
+import '../services/softpay_plugin.dart';
 
 class PosPage extends StatefulWidget {
   final EnvironmentConfig config;
@@ -17,6 +17,7 @@ class PosPage extends StatefulWidget {
 class _PosPageState extends State<PosPage> {
   late final WebViewController _controller;
   final _log = LogService.instance;
+  final _softPay = SoftPayPlugin();
   bool _loading = true;
   bool _credentialsInjected = false;
   bool _showDebug = false;
@@ -424,6 +425,18 @@ class _PosPageState extends State<PosPage> {
       ..loadRequest(Uri.parse(_posUrl));
 
     _log.info('Loading: $_posUrl');
+    _initSoftPay();
+  }
+
+  Future<void> _initSoftPay() async {
+    if (!widget.config.softPayEnabled) {
+      _log.debug('SoftPay not enabled, skipping init');
+      return;
+    }
+    await _softPay.initialize(
+      integratorId: widget.config.softPayIntegratorId,
+      secret: widget.config.softPayCredentials,
+    );
   }
 
   void _onDebugMessage(String msg) {
@@ -553,7 +566,7 @@ class _PosPageState extends State<PosPage> {
     }
   }
 
-  void _handleEftRequest(String id, Map<String, dynamic> json) {
+  Future<void> _handleEftRequest(String id, Map<String, dynamic> json) async {
     final command = json['Command'] as String? ?? 'Purchase';
     _log.info('EFT REQ: command=$command');
 
@@ -563,6 +576,18 @@ class _PosPageState extends State<PosPage> {
         data: 'SoftPay is not enabled in app settings',
       );
       return;
+    }
+
+    if (!_softPay.isInitialized) {
+      _log.warn('SoftPay not initialized, attempting init...');
+      await _initSoftPay();
+      if (!_softPay.isInitialized) {
+        _sendResponseToBC(
+          type: command, id: id, success: false,
+          data: 'SoftPay SDK failed to initialize',
+        );
+        return;
+      }
     }
 
     final amountBreakdown = json['AmountBreakdown'] as Map<String, dynamic>?;
@@ -576,29 +601,44 @@ class _PosPageState extends State<PosPage> {
 
     _log.info('  Amount=$totalAmount ($amountMinor minor) $currencyCode ref=$transactionId');
 
-    final params = {
-      'integrator_id': widget.config.softPayIntegratorId,
-      'credentials': widget.config.softPayCredentials,
-      'amount': amountMinor.toString(),
-      'currency': currencyCode,
-      if (transactionId.isNotEmpty) 'reference': transactionId,
-      'callback': 'rtslsc://softpay-callback',
-    };
+    SoftPayResult result;
+    switch (command) {
+      case 'Purchase':
+      case 'PreAuth':
+      case 'FinalizePreAuth':
+        result = await _softPay.purchase(amount: amountMinor, currency: currencyCode);
+        break;
+      case 'Refund':
+        result = await _softPay.refund(amount: amountMinor, currency: currencyCode);
+        break;
+      case 'Void':
+        final origTxnIds = json['OriginalTransactionIds'] as Map<String, dynamic>?;
+        final origRequestId = origTxnIds?['EFTTransactionId'] as String?;
+        result = await _softPay.cancel(requestId: origRequestId);
+        break;
+      default:
+        result = await _softPay.purchase(amount: amountMinor, currency: currencyCode);
+        break;
+    }
 
-    final uri = Uri(scheme: 'softpay', host: 'payment', queryParameters: params);
-    _log.info('  Launching: $uri');
-
-    launchUrl(uri, mode: LaunchMode.externalApplication).then((launched) {
-      if (!launched) {
-        _log.error('  SoftPay launch FAILED');
-        _sendResponseToBC(type: command, id: id, success: false, data: 'Could not launch SoftPay app');
-      } else {
-        _log.info('  SoftPay launched OK');
-      }
-    }).catchError((e) {
-      _log.error('  SoftPay launch exception: $e');
-      _sendResponseToBC(type: command, id: id, success: false, data: 'SoftPay error: $e');
-    });
+    if (result.success && result.transaction != null) {
+      _log.info('  SoftPay $command OK: ${result.transaction!.state}');
+      _sendResponseToBC(
+        type: command,
+        id: id,
+        success: true,
+        data: result.transaction!.toLsCentralJson(),
+      );
+    } else {
+      final errorMsg = result.errorMessage ?? 'Transaction failed';
+      _log.error('  SoftPay $command FAILED: $errorMsg');
+      _sendResponseToBC(
+        type: command,
+        id: id,
+        success: false,
+        data: errorMsg,
+      );
+    }
   }
 
   Future<void> _sendResponseToBC({
