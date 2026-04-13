@@ -1,6 +1,7 @@
 package com.rts.lsc.rts_lsc
 
 import android.content.Context
+import android.content.Intent
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -33,6 +34,19 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
 
     private var client: Client? = null
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    /// Bring our app back to foreground after SoftPay finishes
+    private fun bringToForeground() {
+        try {
+            val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
+            if (intent != null) {
+                intent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                context.startActivity(intent)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not bring app to foreground: ${e.message}")
+        }
+    }
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
@@ -105,6 +119,7 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
         handler.post {
             try {
                 PaymentTransaction.call(c.transactionManager, amount) { transaction, failure ->
+                    bringToForeground()
                     mainHandler.post {
                         if (failure != null) {
                             Log.e(TAG, "Purchase failed: ${failure.code} - ${failure.message}")
@@ -153,6 +168,7 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
         handler.post {
             try {
                 RefundTransaction.call(c.transactionManager, amount) { transaction, failure ->
+                    bringToForeground()
                     mainHandler.post {
                         if (failure != null) {
                             result.success(mapOf(
@@ -195,6 +211,7 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
         handler.post {
             try {
                 CancelTransaction.call(c.transactionManager, requestId) { transaction, failure ->
+                    bringToForeground()
                     mainHandler.post {
                         if (failure != null) {
                             result.success(mapOf(
