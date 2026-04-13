@@ -627,7 +627,7 @@ class _PosPageState extends State<PosPage> {
         type: command,
         id: id,
         success: true,
-        data: result.transaction!.toLsCentralJson(),
+        data: result.transaction!.toLsCentralJson(clientTransactionId: transactionId),
       );
     } else {
       final errorMsg = result.errorMessage ?? 'Transaction failed';

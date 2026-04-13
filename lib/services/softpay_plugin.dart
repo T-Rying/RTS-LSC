@@ -173,7 +173,9 @@ class SoftPayTransaction {
   }
 
   /// Convert to LS Central EFT response JSON format.
-  String toLsCentralJson() {
+  /// [clientTransactionId] is the original TransactionId from the LS Central request
+  /// that must be echoed back so BC can match request to response.
+  String toLsCentralJson({String clientTransactionId = ''}) {
     final amountDecimal = amount != null ? amount! / 100.0 : 0.0;
     return jsonEncode({
       'TransactionType': type ?? 'Purchase',
@@ -183,9 +185,11 @@ class SoftPayTransaction {
       'Message': state == 'COMPLETED' ? 'Transaction approved' : 'Transaction $state',
       'TenderType': cardScheme ?? '',
       'IDs': {
-        'TransactionId': '',
+        'TransactionId': clientTransactionId,
         'EFTTransactionId': requestId ?? '',
         'TransactionDateTime': DateTime.now().toIso8601String(),
+        'AdditionalId': '',
+        'MerchantOrderId': '',
         'BatchNumber': batchNumber ?? '',
       },
       'CardDetails': {
