@@ -258,7 +258,7 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
             "state" to transaction.state.toString(),
             "type" to transaction.type.toString(),
             "amount" to transaction.amount.minor,
-            "currency" to transaction.amount.currency,
+            "currency" to transaction.amount.currency.currencyCode,
             "cardScheme" to transaction.scheme?.toString(),
             "cardToken" to transaction.cardToken,
             "auditNumber" to transaction.auditNumber,
