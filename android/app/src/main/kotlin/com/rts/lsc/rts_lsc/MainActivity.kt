@@ -5,10 +5,13 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
+    lateinit var softPayPlugin: SoftPayPlugin
+        private set
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
-        val softPayPlugin = SoftPayPlugin(this)
+        softPayPlugin = SoftPayPlugin(this)
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             SoftPayPlugin.CHANNEL

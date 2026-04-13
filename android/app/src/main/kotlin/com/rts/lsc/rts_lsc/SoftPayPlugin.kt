@@ -50,14 +50,49 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
         }
     }
 
+    val jsInterface = WebViewJsInterface(this)
+
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
             "initialize" -> initialize(call, result)
+            "registerJsInterface" -> registerJsInterface(call, result)
             "purchase" -> purchase(call, result)
             "refund" -> refund(call, result)
             "cancel" -> cancel(call, result)
             "dispose" -> dispose(result)
             else -> result.notImplemented()
+        }
+    }
+
+    @android.annotation.SuppressLint("JavascriptInterface")
+    private fun registerJsInterface(call: MethodCall, result: MethodChannel.Result) {
+        // Find the Flutter WebView in the view hierarchy and register our
+        // native blocking JS interface on it.
+        val activity = context as? Activity
+        if (activity == null) {
+            result.error("NO_ACTIVITY", "Context is not an activity", null)
+            return
+        }
+
+        fun findWebView(view: android.view.View): android.webkit.WebView? {
+            if (view is android.webkit.WebView) return view
+            if (view is android.view.ViewGroup) {
+                for (i in 0 until view.childCount) {
+                    val found = findWebView(view.getChildAt(i))
+                    if (found != null) return found
+                }
+            }
+            return null
+        }
+
+        val webView = findWebView(activity.window.decorView)
+        if (webView != null) {
+            webView.addJavascriptInterface(jsInterface, WebViewJsInterface.JS_INTERFACE_NAME)
+            Log.i(TAG, "Registered ${WebViewJsInterface.JS_INTERFACE_NAME} on WebView")
+            result.success(true)
+        } else {
+            Log.w(TAG, "WebView not found in view hierarchy")
+            result.success(false)
         }
     }
 
@@ -238,6 +273,158 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
             Log.i(TAG, "Cancel request id: ${request.id}")
             request.process()
         }
+    }
+
+    /**
+     * Called by WebViewJsInterface.request() — processes an EFT request
+     * synchronously (blocks the calling thread via CountDownLatch).
+     * [callback] is invoked with the JSON response string when done.
+     */
+    fun processRequest(type: String, jsonData: String, callback: (String) -> Unit) {
+        val c = client
+        if (c == null) {
+            callback("""{"ResultCode":"Error","Message":"SoftPay not initialized"}""")
+            return
+        }
+
+        try {
+            val json = org.json.JSONObject(jsonData)
+            val command = json.optString("Command", type)
+
+            when (command) {
+                "StartSession" -> {
+                    callback("""{"SessionResponse":"StartingSessionSuccessful"}""")
+                }
+                "FinishSession" -> {
+                    callback("{}")
+                }
+                "CloseAddIn" -> {
+                    callback("{}")
+                }
+                "GetLastTransaction" -> {
+                    val txn = lastTransactionJson
+                    callback(txn ?: """{"ResultCode":"Error","Message":"No previous transaction"}""")
+                }
+                "Purchase", "PreAuth", "FinalizePreAuth" -> {
+                    processPayment(c, json, callback)
+                }
+                "Refund" -> {
+                    processRefund(c, json, callback)
+                }
+                else -> {
+                    processPayment(c, json, callback)
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "processRequest error", e)
+            callback("""{"ResultCode":"Error","Message":"${e.message}"}""")
+        }
+    }
+
+    private var lastTransactionJson: String? = null
+
+    private fun processPayment(c: Client, json: org.json.JSONObject, callback: (String) -> Unit) {
+        val breakdown = json.optJSONObject("AmountBreakdown")
+        val totalAmount = breakdown?.optDouble("TotalAmount", 0.0) ?: 0.0
+        val currencyCode = breakdown?.optString("CurrencyCode", "DKK") ?: "DKK"
+        val transactionId = json.optString("TransactionId", "")
+        val amountMinor = (totalAmount * 100).toLong()
+
+        Log.i(TAG, "processPayment: $amountMinor $currencyCode ref=$transactionId")
+        val amount = amountOf(amountMinor, currencyCode)
+
+        val payment = object : PaymentTransaction {
+            override val amount = amount
+
+            override fun onSuccess(request: Request, txn: Transaction) {
+                Log.i(TAG, "Payment success: ${txn.state}")
+                bringToForeground()
+                val response = buildTransactionResponse(txn, transactionId)
+                lastTransactionJson = response
+                callback(response)
+            }
+
+            override fun onFailure(manager: Manager<*>, request: Request?, failure: Failure) {
+                Log.e(TAG, "Payment failed: ${failure.code} - ${failure.message}")
+                bringToForeground()
+                val failTxn = failure[Transaction::class.java]
+                val response = if (failTxn != null) {
+                    buildTransactionResponse(failTxn, transactionId)
+                } else {
+                    """{"ResultCode":"Error","AuthorizationStatus":"Declined","Message":"${failure.message ?: "Payment failed"}","IDs":{"TransactionId":"$transactionId","EFTTransactionId":""},"AmountBreakdown":{"TotalAmount":0,"CurrencyCode":"$currencyCode"}}"""
+                }
+                lastTransactionJson = response
+                callback(response)
+            }
+        }
+
+        c.transactionManager.requestFor(payment) { request ->
+            Log.i(TAG, "Payment request id: ${request.id}")
+            request.process()
+        }
+    }
+
+    private fun processRefund(c: Client, json: org.json.JSONObject, callback: (String) -> Unit) {
+        val breakdown = json.optJSONObject("AmountBreakdown")
+        val totalAmount = breakdown?.optDouble("TotalAmount", 0.0) ?: 0.0
+        val currencyCode = breakdown?.optString("CurrencyCode", "DKK") ?: "DKK"
+        val transactionId = json.optString("TransactionId", "")
+        val amountMinor = (totalAmount * 100).toLong()
+
+        val amount = amountOf(amountMinor, currencyCode)
+
+        val refund = object : RefundTransaction {
+            override val amount = amount
+
+            override fun onSuccess(request: Request, txn: Transaction) {
+                bringToForeground()
+                val response = buildTransactionResponse(txn, transactionId)
+                lastTransactionJson = response
+                callback(response)
+            }
+
+            override fun onFailure(manager: Manager<*>, request: Request?, failure: Failure) {
+                bringToForeground()
+                callback("""{"ResultCode":"Error","AuthorizationStatus":"Declined","Message":"${failure.message ?: "Refund failed"}","IDs":{"TransactionId":"$transactionId","EFTTransactionId":""},"AmountBreakdown":{"TotalAmount":0,"CurrencyCode":"$currencyCode"}}""")
+            }
+        }
+
+        c.transactionManager.requestFor(refund) { request ->
+            request.process()
+        }
+    }
+
+    private fun buildTransactionResponse(txn: Transaction, clientTransactionId: String): String {
+        val amountDecimal = txn.amount.minor / 100.0
+        val approved = txn.state.toString() == "COMPLETED"
+        return org.json.JSONObject().apply {
+            put("TransactionType", txn.type?.toString() ?: "Purchase")
+            put("AuthorizationStatus", if (approved) "Approved" else "Declined")
+            put("AuthorizationCode", txn.auditNumber ?: "")
+            put("ResultCode", if (approved) "Success" else "Error")
+            put("Message", if (approved) "Transaction approved" else "Transaction ${txn.state}")
+            put("TenderType", txn.scheme?.toString() ?: "")
+            put("IDs", org.json.JSONObject().apply {
+                put("TransactionId", clientTransactionId)
+                put("EFTTransactionId", txn.requestId ?: "")
+                put("TransactionDateTime", java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US).format(java.util.Date()))
+                put("AdditionalId", "")
+                put("MerchantOrderId", "")
+                put("BatchNumber", txn.batchNumber ?: "")
+            })
+            put("CardDetails", org.json.JSONObject().apply {
+                put("CardNumber", txn.cardToken ?: "")
+                put("CardIssuer", txn.scheme?.toString() ?: "")
+            })
+            put("AmountBreakdown", org.json.JSONObject().apply {
+                put("TotalAmount", amountDecimal)
+                put("CurrencyCode", txn.amount.currency.currencyCode)
+                put("CashbackAmount", 0.0)
+                put("TaxAmount", 0.0)
+                put("SurchargeAmount", 0.0)
+                put("TipAmount", 0.0)
+            })
+        }.toString()
     }
 
     private fun dispose(result: MethodChannel.Result) {

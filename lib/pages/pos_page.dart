@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/services.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import '../models/environment_config.dart';
 import '../services/log_service.dart';
@@ -203,9 +204,23 @@ class _PosPageState extends State<PosPage> {
           return '{}';
         };
 
-        // The control add-in calls LSAppShell.request(type, id, json)
-        obj.request = function() { return send('request', arguments); };
-        obj.Request = function() { return send('Request', arguments); };
+        // The control add-in calls LSAppShell.request(type, json) and expects
+        // a SYNCHRONOUS return value. Use the native blocking Java interface
+        // (LSAppShellNative.request) which blocks until SoftPay SDK responds.
+        var nativeRequest = function(type, json) {
+          D('LSAppShell.request(' + type + ') -> native blocking call');
+          try {
+            // window.LSAppShellNative is registered via addJavascriptInterface
+            // with a @JavascriptInterface method that blocks the JS thread.
+            if (window.LSAppShellNative && window.LSAppShellNative.request) {
+              return window.LSAppShellNative.request(type, json);
+            }
+          } catch(e) { D('native request error: ' + e); }
+          // Fallback to async (won't work properly but at least logs)
+          return send('request', arguments);
+        };
+        obj.request = function(type, json) { return nativeRequest(type, json); };
+        obj.Request = function(type, json) { return nativeRequest(type, json); };
         obj.PostMessage = function(msg) { return send('PostMessage', arguments); };
         obj.Purchase = function() { return send('Purchase', arguments); };
         obj.Refund = function() { return send('Refund', arguments); };
@@ -243,7 +258,12 @@ class _PosPageState extends State<PosPage> {
         };
 
         obj.PostMessage = function(msg) { return send('PostMessage', arguments); };
-        obj.Request = function() { return send('Request', arguments); };
+        obj.Request = function(type, json) {
+          if (w.LSAppShellNative && w.LSAppShellNative.request) {
+            return w.LSAppShellNative.request(type, json);
+          }
+          return send('Request', arguments);
+        };
         obj.Purchase = function() { return send('Purchase', arguments); };
         obj.Refund = function() { return send('Refund', arguments); };
         obj.Void = function() { return send('Void', arguments); };
@@ -427,8 +447,26 @@ class _PosPageState extends State<PosPage> {
       })
       ..loadRequest(Uri.parse(_posUrl));
 
+    // Register native blocking JS interface for SoftPay SDK calls.
+    // The LSC_DeviceDialog calls LSAppShell.request() and expects a
+    // SYNCHRONOUS return value. Flutter JS channels are async, so we
+    // use Android's addJavascriptInterface for a real blocking method.
+    _registerNativeJsInterface();
+
     _log.info('Loading: $_posUrl');
     _initSoftPay();
+  }
+
+  Future<void> _registerNativeJsInterface() async {
+    // Wait a moment for the WebView to be fully laid out
+    await Future.delayed(const Duration(milliseconds: 500));
+    try {
+      final result = await const MethodChannel('com.rts.lsc/softpay')
+          .invokeMethod('registerJsInterface');
+      _log.info('Native JS interface registered: $result');
+    } catch (e) {
+      _log.error('Failed to register native JS interface: $e');
+    }
   }
 
   Future<void> _initSoftPay() async {
