@@ -19,6 +19,8 @@ class _PosPageState extends State<PosPage> {
   final _log = LogService.instance;
   final _softPay = SoftPayPlugin();
   SoftPayTransaction? _lastTransaction;
+  String _lastTransactionId = '';
+  String _lastCommand = '';
   bool _loading = true;
   bool _credentialsInjected = false;
   bool _showDebug = false;
@@ -608,18 +610,47 @@ class _PosPageState extends State<PosPage> {
 
   /// Handle GetLastTransaction — BC asks for the last EFT transaction
   /// to retrieve the EFT transaction ID for receipts, etc.
+  /// Must return a response even if the last transaction failed/was cancelled.
   void _handleGetLastTransaction(String id, Map<String, dynamic> json) {
     _log.info('GetLastTransaction requested');
+    final transactionId = json['TransactionId'] as String? ?? _lastTransactionId;
+
     if (_lastTransaction != null) {
-      final transactionId = json['TransactionId'] as String? ?? '';
       _sendResponseToBC(
-        type: 'GetLastTransaction', id: id, success: true,
+        type: _lastCommand.isNotEmpty ? _lastCommand : 'GetLastTransaction',
+        id: id,
+        success: true,
         data: _lastTransaction!.toLsCentralJson(clientTransactionId: transactionId),
       );
     } else {
+      // Even with no transaction, return a valid JSON response so BC can
+      // close the dialog cleanly instead of throwing an error.
       _sendResponseToBC(
-        type: 'GetLastTransaction', id: id, success: false,
-        data: 'No previous transaction',
+        type: _lastCommand.isNotEmpty ? _lastCommand : 'GetLastTransaction',
+        id: id,
+        success: true,
+        data: jsonEncode({
+          'TransactionType': _lastCommand.isNotEmpty ? _lastCommand : 'Unknown',
+          'AuthorizationStatus': 'Declined',
+          'ResultCode': 'Error',
+          'Message': 'No transaction completed',
+          'TenderType': '',
+          'IDs': {
+            'TransactionId': transactionId,
+            'EFTTransactionId': '',
+            'TransactionDateTime': DateTime.now().toIso8601String(),
+            'BatchNumber': '',
+          },
+          'CardDetails': {'CardNumber': '', 'CardIssuer': ''},
+          'AmountBreakdown': {
+            'TotalAmount': 0.0,
+            'CurrencyCode': 'DKK',
+            'CashbackAmount': 0.0,
+            'TaxAmount': 0.0,
+            'SurchargeAmount': 0.0,
+            'TipAmount': 0.0,
+          },
+        }),
       );
     }
   }
@@ -679,8 +710,15 @@ class _PosPageState extends State<PosPage> {
         break;
     }
 
-    if (result.success && result.transaction != null) {
+    // Always store last transaction (even on failure) so GetLastTransaction
+    // can return it — LS Central calls it after both success and failure.
+    if (result.transaction != null) {
       _lastTransaction = result.transaction;
+    }
+    _lastTransactionId = transactionId;
+    _lastCommand = command;
+
+    if (result.success && result.transaction != null) {
       _log.info('  SoftPay $command OK: ${result.transaction!.state}');
       _sendResponseToBC(
         type: command,
