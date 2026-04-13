@@ -133,7 +133,8 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
         handler.post {
             try {
                 PaymentTransaction.call(c.transactionManager, amount) { transaction, failure ->
-                    bringToForeground()
+                    // Delay bring-to-front so SoftPay has time to dismiss its receipt screen
+                    mainHandler.postDelayed({ bringToForeground() }, 500)
                     mainHandler.post {
                         if (failure != null) {
                             Log.e(TAG, "Purchase failed: ${failure.code} - ${failure.message}")
@@ -182,7 +183,7 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
         handler.post {
             try {
                 RefundTransaction.call(c.transactionManager, amount) { transaction, failure ->
-                    bringToForeground()
+                    mainHandler.postDelayed({ bringToForeground() }, 500)
                     mainHandler.post {
                         if (failure != null) {
                             result.success(mapOf(
@@ -225,7 +226,7 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
         handler.post {
             try {
                 CancelTransaction.call(c.transactionManager, requestId) { transaction, failure ->
-                    bringToForeground()
+                    mainHandler.postDelayed({ bringToForeground() }, 500)
                     mainHandler.post {
                         if (failure != null) {
                             result.success(mapOf(
