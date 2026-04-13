@@ -615,18 +615,18 @@ class _PosPageState extends State<PosPage> {
     _log.info('GetLastTransaction requested');
     final transactionId = json['TransactionId'] as String? ?? _lastTransactionId;
 
+    // Response type MUST be "GetLastTransaction" to match BC's EFTTransactionType.
+    // BC checks: if (type == EFTTransactionType) — mismatch causes rejection.
     if (_lastTransaction != null) {
       _sendResponseToBC(
-        type: _lastCommand.isNotEmpty ? _lastCommand : 'GetLastTransaction',
+        type: 'GetLastTransaction',
         id: id,
         success: true,
         data: _lastTransaction!.toLsCentralJson(clientTransactionId: transactionId),
       );
     } else {
-      // Even with no transaction, return a valid JSON response so BC can
-      // close the dialog cleanly instead of throwing an error.
       _sendResponseToBC(
-        type: _lastCommand.isNotEmpty ? _lastCommand : 'GetLastTransaction',
+        type: 'GetLastTransaction',
         id: id,
         success: true,
         data: jsonEncode({
