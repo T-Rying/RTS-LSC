@@ -141,8 +141,8 @@ class SoftPayTransaction {
   final String? type;
   final int? amount;
   final String? currency;
-  final String? cardNumber;
-  final String? cardIssuer;
+  final String? cardScheme;
+  final String? cardToken;
   final String? auditNumber;
   final String? batchNumber;
 
@@ -152,8 +152,8 @@ class SoftPayTransaction {
     this.type,
     this.amount,
     this.currency,
-    this.cardNumber,
-    this.cardIssuer,
+    this.cardScheme,
+    this.cardToken,
     this.auditNumber,
     this.batchNumber,
   });
@@ -165,8 +165,8 @@ class SoftPayTransaction {
       type: map['type'] as String?,
       amount: (map['amount'] as num?)?.toInt(),
       currency: map['currency'] as String?,
-      cardNumber: map['cardNumber'] as String?,
-      cardIssuer: map['cardIssuer'] as String?,
+      cardScheme: map['cardScheme'] as String?,
+      cardToken: map['cardToken'] as String?,
       auditNumber: map['auditNumber'] as String?,
       batchNumber: map['batchNumber'] as String?,
     );
@@ -181,7 +181,7 @@ class SoftPayTransaction {
       'AuthorizationCode': auditNumber ?? '',
       'ResultCode': state == 'COMPLETED' ? 'Success' : 'Error',
       'Message': state == 'COMPLETED' ? 'Transaction approved' : 'Transaction $state',
-      'TenderType': cardIssuer ?? '',
+      'TenderType': cardScheme ?? '',
       'IDs': {
         'TransactionId': '',
         'EFTTransactionId': requestId ?? '',
@@ -189,8 +189,8 @@ class SoftPayTransaction {
         'BatchNumber': batchNumber ?? '',
       },
       'CardDetails': {
-        'CardNumber': cardNumber ?? '',
-        'CardIssuer': cardIssuer ?? '',
+        'CardNumber': cardToken ?? '',
+        'CardIssuer': cardScheme ?? '',
       },
       'AmountBreakdown': {
         'TotalAmount': amountDecimal,

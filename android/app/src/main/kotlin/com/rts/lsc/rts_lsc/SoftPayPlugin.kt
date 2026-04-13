@@ -57,7 +57,8 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
             // Dispose existing client if any
             try { Softpay.disposeClient() } catch (_: Exception) {}
 
-            val integrator = Integrator(integratorId, if (secret.isNotEmpty()) secret else null)
+            val integratorSecret = secret.toCharArray()
+            val integrator = Integrator(integratorId, secret = integratorSecret)
 
             val failureHandler = failureHandlerOf { manager, request, failure ->
                 Log.w(TAG, "SoftPay failure: ${failure.code}/${failure.detailedCode} - ${failure.message}")
@@ -236,8 +237,8 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
             "type" to transaction.type.toString(),
             "amount" to transaction.amount.minor,
             "currency" to transaction.amount.currency,
-            "cardNumber" to transaction.cardNumber,
-            "cardIssuer" to transaction.aid?.scheme?.name,
+            "cardScheme" to transaction.scheme?.toString(),
+            "cardToken" to transaction.cardToken,
             "auditNumber" to transaction.auditNumber,
             "batchNumber" to transaction.batchNumber
         )
