@@ -1,5 +1,7 @@
 package com.rts.lsc.rts_lsc
 
+import android.app.Activity
+import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
 import android.os.Handler
@@ -38,10 +40,22 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
     /// Bring our app back to foreground after SoftPay finishes
     private fun bringToForeground() {
         try {
-            val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
-            if (intent != null) {
-                intent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                context.startActivity(intent)
+            val activity = context as? Activity
+            if (activity != null) {
+                val am = activity.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+                am.moveTaskToFront(activity.taskId, ActivityManager.MOVE_TASK_WITH_HOME)
+                Log.i(TAG, "Moved task ${activity.taskId} to front")
+            } else {
+                // Fallback: launch intent
+                val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
+                if (intent != null) {
+                    intent.addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    )
+                    context.startActivity(intent)
+                }
             }
         } catch (e: Exception) {
             Log.w(TAG, "Could not bring app to foreground: ${e.message}")
