@@ -18,6 +18,7 @@ class _PosPageState extends State<PosPage> {
   late final WebViewController _controller;
   final _log = LogService.instance;
   final _softPay = SoftPayPlugin();
+  SoftPayTransaction? _lastTransaction;
   bool _loading = true;
   bool _credentialsInjected = false;
   bool _showDebug = false;
@@ -466,12 +467,25 @@ class _PosPageState extends State<PosPage> {
           data: msg['data'] as String,
         );
       } else if (method == 'request' || method == 'Request') {
-        // LSAppShellAPIClass calls LSAppShell.request(type, id, json)
+        // LSAppShellAPIClass calls LSAppShell.Request(type, jsonData) with 2 args.
+        // args[0] = type (e.g. "StartSession", "Purchase", "GetLastTransaction")
+        // args[1] = JSON string with EFTSettings, Command, AmountBreakdown, etc.
         final args = msg['args'] as List<dynamic>? ?? [];
+        final type = args.isNotEmpty ? args[0].toString() : '';
+        final jsonData = args.length > 1 ? args[1].toString() : '{}';
+        // Extract the Command from JSON to use as type if the first arg is generic
+        String resolvedType = type;
+        try {
+          final parsed = jsonDecode(jsonData) as Map<String, dynamic>;
+          final command = parsed['Command'] as String?;
+          if (command != null && command.isNotEmpty) {
+            resolvedType = command;
+          }
+        } catch (_) {}
         _handleDeviceRequest(
-          type: args.isNotEmpty ? args[0].toString() : '',
-          id: args.length > 1 ? args[1].toString() : '',
-          data: args.length > 2 ? args[2].toString() : '{}',
+          type: resolvedType,
+          id: type, // The type string serves as correlation ID
+          data: jsonData,
         );
       } else if (method == 'PostMessage') {
         // Generic PostMessage — try to parse as device request
@@ -529,9 +543,17 @@ class _PosPageState extends State<PosPage> {
     required String data,
   }) {
     _log.info('DEVICE REQ: type=$type id=$id');
-    final json = jsonDecode(data) as Map<String, dynamic>;
-    final eftSettings = json['EFTSettings'] as Map<String, dynamic>?;
-    final host = eftSettings?['Host'] as String? ?? '';
+    Map<String, dynamic> json;
+    try {
+      json = jsonDecode(data) as Map<String, dynamic>;
+    } catch (e) {
+      _log.error('  Failed to parse request data: $e');
+      return;
+    }
+
+    // EFTSettings may be at top level or nested
+    final eftSettings = json['EFTSettings'] as Map<String, dynamic>? ?? json;
+    final host = eftSettings['Host'] as String? ?? '';
     _log.debug('  Host=$host');
 
     final isAppShell = host == '###LSAPPSHELL';
@@ -553,7 +575,17 @@ class _PosPageState extends State<PosPage> {
       case 'CloseAddIn':
         _sendResponseToBC(type: 'CLOSEADDIN', id: id, success: true, data: '{}');
         break;
+      case 'GetLastTransaction':
+        _handleGetLastTransaction(id, json);
+        break;
       case 'EFT:REQUEST':
+        _handleEftRequest(id, json);
+        break;
+      case 'Purchase':
+      case 'Refund':
+      case 'Void':
+      case 'PreAuth':
+      case 'FinalizePreAuth':
         _handleEftRequest(id, json);
         break;
       default:
@@ -563,6 +595,24 @@ class _PosPageState extends State<PosPage> {
           _log.warn('  Unknown type: $type');
         }
         break;
+    }
+  }
+
+  /// Handle GetLastTransaction — BC asks for the last EFT transaction
+  /// to retrieve the EFT transaction ID for receipts, etc.
+  void _handleGetLastTransaction(String id, Map<String, dynamic> json) {
+    _log.info('GetLastTransaction requested');
+    if (_lastTransaction != null) {
+      final transactionId = json['TransactionId'] as String? ?? '';
+      _sendResponseToBC(
+        type: 'GetLastTransaction', id: id, success: true,
+        data: _lastTransaction!.toLsCentralJson(clientTransactionId: transactionId),
+      );
+    } else {
+      _sendResponseToBC(
+        type: 'GetLastTransaction', id: id, success: false,
+        data: 'No previous transaction',
+      );
     }
   }
 
@@ -622,6 +672,7 @@ class _PosPageState extends State<PosPage> {
     }
 
     if (result.success && result.transaction != null) {
+      _lastTransaction = result.transaction;
       _log.info('  SoftPay $command OK: ${result.transaction!.state}');
       _sendResponseToBC(
         type: command,
