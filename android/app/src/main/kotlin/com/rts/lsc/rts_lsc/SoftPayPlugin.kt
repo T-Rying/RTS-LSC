@@ -3,7 +3,6 @@ package com.rts.lsc.rts_lsc
 import android.app.Activity
 import android.app.ActivityManager
 import android.content.Context
-import android.content.Intent
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -25,7 +24,6 @@ import io.softpay.client.newHandler
 import io.softpay.client.transaction.CancelTransaction
 import io.softpay.client.transaction.PaymentTransaction
 import io.softpay.client.transaction.RefundTransaction
-import io.softpay.client.transaction.TransactionFailures
 
 class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHandler {
 
@@ -37,12 +35,9 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
     private var client: Client? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    /// Bring our app back to foreground after SoftPay finishes.
-    /// Retries several times because the SDK callback may fire while
-    /// SoftPay is still showing its result screen.
+    // Bring our app back to foreground after SoftPay finishes
     private fun bringToForeground() {
-        // Try immediately, then retry at 500ms, 1s, 2s, 3s
-        for (delay in longArrayOf(0, 500, 1000, 2000, 3000)) {
+        for (delay in longArrayOf(0, 300, 800, 1500, 3000)) {
             mainHandler.postDelayed({
                 try {
                     val activity = context as? Activity
@@ -50,9 +45,7 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
                         val am = activity.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
                         am.moveTaskToFront(activity.taskId, ActivityManager.MOVE_TASK_WITH_HOME)
                     }
-                } catch (e: Exception) {
-                    Log.w(TAG, "bringToForeground failed: ${e.message}")
-                }
+                } catch (_: Exception) {}
             }, delay)
         }
     }
@@ -78,7 +71,6 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
         }
 
         try {
-            // Dispose existing client if any
             try { Softpay.disposeClient() } catch (_: Exception) {}
 
             val integratorSecret = secret.toCharArray()
@@ -100,8 +92,6 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
 
             client = Softpay.clientWithOptionsOrNew(options)
             Log.i(TAG, "SoftPay client created: $client")
-            // Don't call connect() — the SDK connects lazily when a transaction
-            // is processed, matching how the real LS AppShell works.
             result.success(true)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to initialize SoftPay", e)
@@ -120,42 +110,42 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
         val currency = call.argument<String>("currency") ?: "DKK"
 
         Log.i(TAG, "Purchase: $amountMinor $currency")
-
         val amount = amountOf(amountMinor, currency)
 
-        // Run on background handler since call() blocks
-        val handler = newHandler()
-        handler.post {
-            try {
-                PaymentTransaction.call(c.transactionManager, amount) { transaction, failure ->
-                    bringToForeground()
-                    mainHandler.post {
-                        if (failure != null) {
-                            Log.e(TAG, "Purchase failed: ${failure.code} - ${failure.message}")
-                            result.success(mapOf(
-                                "success" to false,
-                                "errorCode" to failure.code,
-                                "errorMessage" to (failure.message ?: "Purchase failed"),
-                                "transaction" to transactionToMap(failure[Transaction::class.java])
-                            ))
-                        } else {
-                            Log.i(TAG, "Purchase success: ${transaction?.state}")
-                            result.success(mapOf(
-                                "success" to true,
-                                "transaction" to transactionToMap(transaction)
-                            ))
-                        }
-                    }
-                }
-            } catch (e: Exception) {
+        // Use non-blocking requestFor/process pattern (like the real AppShell)
+        // instead of blocking call() — this keeps the handler free for the
+        // SoftPay activity return event.
+        val payment = object : PaymentTransaction {
+            override val amount = amount
+
+            override fun onSuccess(request: Request, txn: Transaction) {
+                Log.i(TAG, "Purchase success: ${txn.state}")
+                bringToForeground()
                 mainHandler.post {
-                    Log.e(TAG, "Purchase exception", e)
                     result.success(mapOf(
-                        "success" to false,
-                        "errorMessage" to (e.message ?: "Purchase exception")
+                        "success" to true,
+                        "transaction" to transactionToMap(txn)
                     ))
                 }
             }
+
+            override fun onFailure(manager: Manager<*>, request: Request?, failure: Failure) {
+                Log.e(TAG, "Purchase failed: ${failure.code} - ${failure.message}")
+                bringToForeground()
+                mainHandler.post {
+                    result.success(mapOf(
+                        "success" to false,
+                        "errorCode" to failure.code,
+                        "errorMessage" to (failure.message ?: "Purchase failed"),
+                        "transaction" to transactionToMap(failure[Transaction::class.java])
+                    ))
+                }
+            }
+        }
+
+        c.transactionManager.requestFor(payment) { request ->
+            Log.i(TAG, "Purchase request id: ${request.id}")
+            request.process()
         }
     }
 
@@ -170,38 +160,39 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
         val currency = call.argument<String>("currency") ?: "DKK"
 
         Log.i(TAG, "Refund: $amountMinor $currency")
-
         val amount = amountOf(amountMinor, currency)
 
-        val handler = newHandler()
-        handler.post {
-            try {
-                RefundTransaction.call(c.transactionManager, amount) { transaction, failure ->
-                    bringToForeground()
-                    mainHandler.post {
-                        if (failure != null) {
-                            result.success(mapOf(
-                                "success" to false,
-                                "errorCode" to failure.code,
-                                "errorMessage" to (failure.message ?: "Refund failed"),
-                                "transaction" to transactionToMap(failure[Transaction::class.java])
-                            ))
-                        } else {
-                            result.success(mapOf(
-                                "success" to true,
-                                "transaction" to transactionToMap(transaction)
-                            ))
-                        }
-                    }
-                }
-            } catch (e: Exception) {
+        val refund = object : RefundTransaction {
+            override val amount = amount
+
+            override fun onSuccess(request: Request, txn: Transaction) {
+                Log.i(TAG, "Refund success: ${txn.state}")
+                bringToForeground()
                 mainHandler.post {
                     result.success(mapOf(
-                        "success" to false,
-                        "errorMessage" to (e.message ?: "Refund exception")
+                        "success" to true,
+                        "transaction" to transactionToMap(txn)
                     ))
                 }
             }
+
+            override fun onFailure(manager: Manager<*>, request: Request?, failure: Failure) {
+                Log.e(TAG, "Refund failed: ${failure.code} - ${failure.message}")
+                bringToForeground()
+                mainHandler.post {
+                    result.success(mapOf(
+                        "success" to false,
+                        "errorCode" to failure.code,
+                        "errorMessage" to (failure.message ?: "Refund failed"),
+                        "transaction" to transactionToMap(failure[Transaction::class.java])
+                    ))
+                }
+            }
+        }
+
+        c.transactionManager.requestFor(refund) { request ->
+            Log.i(TAG, "Refund request id: ${request.id}")
+            request.process()
         }
     }
 
@@ -213,38 +204,39 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
         }
 
         val requestId = call.argument<String>("requestId")
-
         Log.i(TAG, "Cancel: $requestId")
 
-        val handler = newHandler()
-        handler.post {
-            try {
-                CancelTransaction.call(c.transactionManager, requestId) { transaction, failure ->
-                    bringToForeground()
-                    mainHandler.post {
-                        if (failure != null) {
-                            result.success(mapOf(
-                                "success" to false,
-                                "errorCode" to failure.code,
-                                "errorMessage" to (failure.message ?: "Cancel failed"),
-                                "transaction" to transactionToMap(failure[Transaction::class.java])
-                            ))
-                        } else {
-                            result.success(mapOf(
-                                "success" to true,
-                                "transaction" to transactionToMap(transaction)
-                            ))
-                        }
-                    }
-                }
-            } catch (e: Exception) {
+        val cancellation = object : CancelTransaction {
+            override val requestId = requestId
+
+            override fun onSuccess(request: Request, txn: Transaction) {
+                Log.i(TAG, "Cancel success: ${txn.state}")
+                bringToForeground()
                 mainHandler.post {
                     result.success(mapOf(
-                        "success" to false,
-                        "errorMessage" to (e.message ?: "Cancel exception")
+                        "success" to true,
+                        "transaction" to transactionToMap(txn)
                     ))
                 }
             }
+
+            override fun onFailure(manager: Manager<*>, request: Request?, failure: Failure) {
+                Log.e(TAG, "Cancel failed: ${failure.code} - ${failure.message}")
+                bringToForeground()
+                mainHandler.post {
+                    result.success(mapOf(
+                        "success" to false,
+                        "errorCode" to failure.code,
+                        "errorMessage" to (failure.message ?: "Cancel failed"),
+                        "transaction" to transactionToMap(failure[Transaction::class.java])
+                    ))
+                }
+            }
+        }
+
+        c.transactionManager.requestFor(cancellation) { request ->
+            Log.i(TAG, "Cancel request id: ${request.id}")
+            request.process()
         }
     }
 
@@ -255,7 +247,7 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
             Softpay.disposeClient()
             result.success(true)
         } catch (e: Exception) {
-            result.success(true) // Don't fail on dispose
+            result.success(true)
         }
     }
 
