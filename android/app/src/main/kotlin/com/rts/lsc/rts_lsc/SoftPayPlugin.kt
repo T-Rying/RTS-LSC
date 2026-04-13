@@ -6,8 +6,6 @@ import android.os.Looper
 import android.util.Log
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
-import io.softpay.client.CallerCallback
-import io.softpay.client.Capabilities
 import io.softpay.client.Client
 import io.softpay.client.ClientOptions
 import io.softpay.client.Failure
@@ -15,7 +13,6 @@ import io.softpay.client.LogOptions
 import io.softpay.client.Manager
 import io.softpay.client.Request
 import io.softpay.client.Softpay
-import io.softpay.client.connect
 import io.softpay.client.domain.Integrator
 import io.softpay.client.domain.IntegratorEnvironment.KotlinEnvironment
 import io.softpay.client.domain.Transaction
@@ -80,20 +77,9 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
 
             client = Softpay.clientWithOptionsOrNew(options)
             Log.i(TAG, "SoftPay client created: $client")
-
-            // Connect to the SoftPay app — required before processing transactions
-            client!!.clientManager.connect(reason = "RTS-LSC init", callback = CallerCallback<Capabilities> { capabilities, failure ->
-                mainHandler.post {
-                    if (failure != null) {
-                        Log.e(TAG, "SoftPay connect failed: ${failure.code} - ${failure.message}")
-                        result.success(false)
-                    } else {
-                        val readiness = capabilities?.readiness
-                        Log.i(TAG, "SoftPay connected: ready=${readiness?.ready}, authenticated=${readiness?.authenticated}, configured=${readiness?.configured}")
-                        result.success(true)
-                    }
-                }
-            })
+            // Don't call connect() — the SDK connects lazily when a transaction
+            // is processed, matching how the real LS AppShell works.
+            result.success(true)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to initialize SoftPay", e)
             result.error("INIT_FAILED", e.message, null)
