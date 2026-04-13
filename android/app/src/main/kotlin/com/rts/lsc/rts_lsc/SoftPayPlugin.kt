@@ -37,28 +37,23 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
     private var client: Client? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    /// Bring our app back to foreground after SoftPay finishes
+    /// Bring our app back to foreground after SoftPay finishes.
+    /// Retries several times because the SDK callback may fire while
+    /// SoftPay is still showing its result screen.
     private fun bringToForeground() {
-        try {
-            val activity = context as? Activity
-            if (activity != null) {
-                val am = activity.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-                am.moveTaskToFront(activity.taskId, ActivityManager.MOVE_TASK_WITH_HOME)
-                Log.i(TAG, "Moved task ${activity.taskId} to front")
-            } else {
-                // Fallback: launch intent
-                val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
-                if (intent != null) {
-                    intent.addFlags(
-                        Intent.FLAG_ACTIVITY_NEW_TASK or
-                        Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
-                        Intent.FLAG_ACTIVITY_SINGLE_TOP
-                    )
-                    context.startActivity(intent)
+        // Try immediately, then retry at 500ms, 1s, 2s, 3s
+        for (delay in longArrayOf(0, 500, 1000, 2000, 3000)) {
+            mainHandler.postDelayed({
+                try {
+                    val activity = context as? Activity
+                    if (activity != null && !activity.isFinishing) {
+                        val am = activity.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+                        am.moveTaskToFront(activity.taskId, ActivityManager.MOVE_TASK_WITH_HOME)
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "bringToForeground failed: ${e.message}")
                 }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Could not bring app to foreground: ${e.message}")
+            }, delay)
         }
     }
 
@@ -133,8 +128,7 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
         handler.post {
             try {
                 PaymentTransaction.call(c.transactionManager, amount) { transaction, failure ->
-                    // Delay bring-to-front so SoftPay has time to dismiss its receipt screen
-                    mainHandler.postDelayed({ bringToForeground() }, 500)
+                    bringToForeground()
                     mainHandler.post {
                         if (failure != null) {
                             Log.e(TAG, "Purchase failed: ${failure.code} - ${failure.message}")
@@ -183,7 +177,7 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
         handler.post {
             try {
                 RefundTransaction.call(c.transactionManager, amount) { transaction, failure ->
-                    mainHandler.postDelayed({ bringToForeground() }, 500)
+                    bringToForeground()
                     mainHandler.post {
                         if (failure != null) {
                             result.success(mapOf(
@@ -226,7 +220,7 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
         handler.post {
             try {
                 CancelTransaction.call(c.transactionManager, requestId) { transaction, failure ->
-                    mainHandler.postDelayed({ bringToForeground() }, 500)
+                    bringToForeground()
                     mainHandler.post {
                         if (failure != null) {
                             result.success(mapOf(
