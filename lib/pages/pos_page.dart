@@ -487,10 +487,9 @@ class _PosPageState extends State<PosPage> {
           if (command != null && command.isNotEmpty) {
             resolvedType = command;
           }
-          // Build correlation ID matching LS Central's EFTJobID format
-          correlationId = txnId.isNotEmpty
-              ? '$resolvedType:$txnId'
-              : resolvedType;
+          // Build correlation ID matching LS Central's EFTJobID format:
+          // EFTJobID := RequestType + ':' + TransactionID (colon always present)
+          correlationId = '$resolvedType:$txnId';
         } catch (_) {}
         _handleDeviceRequest(
           type: resolvedType,
