@@ -5,6 +5,8 @@ import 'auth_service.dart';
 import 'log_service.dart';
 
 /// SOAP client for the ODataRequest codeunit (Mobile Inventory replication).
+/// Generic replication loop — each entity supplies its own SOAP operation and
+/// any operation-specific body fields (e.g. `storeNo` for GetBarcode).
 class InventoryService {
   static const _bcSaasBaseUrl = 'https://api.businesscentral.dynamics.com/v2.0';
   static const _soapNamespace = 'urn:microsoft-dynamics-schemas/codeunit/ODataRequest';
@@ -16,32 +18,36 @@ class InventoryService {
 
   InventoryService({AuthService? auth}) : _auth = auth ?? AuthService.instance;
 
-  Uri _endpointFor(EnvironmentConfig config) {
-    if (config.type != ConnectionType.saas) {
-      throw StateError('Mobile Inventory currently supports SaaS connections only');
-    }
-    final tenant = Uri.encodeComponent(config.tenant);
-    final env = Uri.encodeComponent(config.company);
-    final company = Uri.encodeComponent(config.companyName);
-    return Uri.parse('$_bcSaasBaseUrl/$tenant/$env/WS/$company/Codeunit/ODataRequest');
-  }
-
-  /// Fetches all barcode records from BC, paginating until `EndOfTable=true`.
-  /// Each row is a flat `Map<FieldName, FieldValue>` based on the replication
-  /// schema (`RecRefJson.RecordFields`).
-  Future<List<Map<String, dynamic>>> getBarcodes(EnvironmentConfig config) async {
+  Future<List<Map<String, dynamic>>> getBarcodes(EnvironmentConfig config) {
     if (config.storeNo.isEmpty) {
       throw StateError('Store No. is required (set it in Settings → Mobile Inventory)');
     }
+    return _replicate(
+      config,
+      operation: 'GetBarcode',
+      extraFields: {'storeNo': config.storeNo},
+    );
+  }
 
+  Future<List<Map<String, dynamic>>> getItemCategories(EnvironmentConfig config) {
+    return _replicate(config, operation: 'GetItemCategory');
+  }
+
+  Future<List<Map<String, dynamic>>> _replicate(
+    EnvironmentConfig config, {
+    required String operation,
+    Map<String, String> extraFields = const {},
+  }) async {
     final all = <Map<String, dynamic>>[];
     var lastKey = '';
     var lastEntryNo = 0;
     var fullRepl = true;
 
     for (var page = 1; page <= _maxPages; page++) {
-      final result = await _fetchBarcodePage(
+      final result = await _fetchPage(
         config,
+        operation: operation,
+        extraFields: extraFields,
         fullRepl: fullRepl,
         lastKey: lastKey,
         lastEntryNo: lastEntryNo,
@@ -53,7 +59,7 @@ class InventoryService {
 
       all.addAll(result.upserts);
       _log.info(
-        'InventoryService: page $page — ${result.upserts.length} upserts '
+        'InventoryService: $operation page $page — ${result.upserts.length} upserts '
         '(total ${all.length}), endOfTable=${result.endOfTable}',
       );
 
@@ -67,49 +73,48 @@ class InventoryService {
     throw const HttpException('Replication exceeded safety cap');
   }
 
-  Future<_BarcodePage> _fetchBarcodePage(
+  Future<_ReplicationPage> _fetchPage(
     EnvironmentConfig config, {
+    required String operation,
+    required Map<String, String> extraFields,
     required bool fullRepl,
     required String lastKey,
     required int lastEntryNo,
   }) async {
+    if (config.type != ConnectionType.saas) {
+      throw StateError('Mobile Inventory currently supports SaaS connections only');
+    }
+
     final token = await _auth.getAccessToken(config);
     final url = _endpointFor(config);
-
-    final body = '''<?xml version="1.0" encoding="utf-8"?>
-<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"
-               xmlns:ns="$_soapNamespace">
-  <soap:Body>
-    <ns:GetBarcode>
-      <ns:storeNo>${_xmlEscape(config.storeNo)}</ns:storeNo>
-      <ns:batchSize>$_batchSize</ns:batchSize>
-      <ns:fullRepl>$fullRepl</ns:fullRepl>
-      <ns:lastKey>${_xmlEscape(lastKey)}</ns:lastKey>
-      <ns:lastEntryNo>$lastEntryNo</ns:lastEntryNo>
-    </ns:GetBarcode>
-  </soap:Body>
-</soap:Envelope>''';
+    final body = _buildSoapBody(
+      operation: operation,
+      extraFields: extraFields,
+      fullRepl: fullRepl,
+      lastKey: lastKey,
+      lastEntryNo: lastEntryNo,
+    );
 
     final response = await http.post(
       url,
       headers: {
         'Authorization': 'Bearer $token',
         'Content-Type': 'text/xml; charset=utf-8',
-        'SOAPAction': '$_soapNamespace:GetBarcode',
+        'SOAPAction': '$_soapNamespace:$operation',
       },
       body: body,
     );
 
     if (response.statusCode != 200) {
-      _log.error('InventoryService: GetBarcode failed (${response.statusCode}): ${response.body}');
+      _log.error('InventoryService: $operation failed (${response.statusCode}): ${response.body}');
       throw HttpException(
-        'GetBarcode failed (${response.statusCode}): ${_extractFaultString(response.body) ?? response.body}',
+        '$operation failed (${response.statusCode}): ${_extractFaultString(response.body) ?? response.body}',
       );
     }
 
     final payload = _extractReturnValue(response.body);
     if (payload == null) {
-      throw const HttpException('GetBarcode response missing <return_value>');
+      throw HttpException('$operation response missing <return_value>');
     }
 
     final json = jsonDecode(payload);
@@ -117,7 +122,41 @@ class InventoryService {
       throw HttpException('Unexpected payload shape: ${payload.substring(0, payload.length.clamp(0, 200))}');
     }
 
-    return _BarcodePage.fromJson(json);
+    return _ReplicationPage.fromJson(json);
+  }
+
+  Uri _endpointFor(EnvironmentConfig config) {
+    final tenant = Uri.encodeComponent(config.tenant);
+    final env = Uri.encodeComponent(config.company);
+    final company = Uri.encodeComponent(config.companyName);
+    return Uri.parse('$_bcSaasBaseUrl/$tenant/$env/WS/$company/Codeunit/ODataRequest');
+  }
+
+  String _buildSoapBody({
+    required String operation,
+    required Map<String, String> extraFields,
+    required bool fullRepl,
+    required String lastKey,
+    required int lastEntryNo,
+  }) {
+    final buf = StringBuffer()
+      ..writeln('<?xml version="1.0" encoding="utf-8"?>')
+      ..writeln('<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"')
+      ..writeln('               xmlns:ns="$_soapNamespace">')
+      ..writeln('  <soap:Body>')
+      ..writeln('    <ns:$operation>');
+    for (final entry in extraFields.entries) {
+      buf.writeln('      <ns:${entry.key}>${_xmlEscape(entry.value)}</ns:${entry.key}>');
+    }
+    buf
+      ..writeln('      <ns:batchSize>$_batchSize</ns:batchSize>')
+      ..writeln('      <ns:fullRepl>$fullRepl</ns:fullRepl>')
+      ..writeln('      <ns:lastKey>${_xmlEscape(lastKey)}</ns:lastKey>')
+      ..writeln('      <ns:lastEntryNo>$lastEntryNo</ns:lastEntryNo>')
+      ..writeln('    </ns:$operation>')
+      ..writeln('  </soap:Body>')
+      ..write('</soap:Envelope>');
+    return buf.toString();
   }
 
   static List<Map<String, dynamic>> _parseRecRef(Map<String, dynamic>? recRefJson) {
@@ -178,7 +217,7 @@ class InventoryService {
       .replaceAll('&amp;', '&');
 }
 
-class _BarcodePage {
+class _ReplicationPage {
   final String status;
   final String errorText;
   final String lastKey;
@@ -187,7 +226,7 @@ class _BarcodePage {
   final List<Map<String, dynamic>> upserts;
   final List<Map<String, dynamic>> deletes;
 
-  const _BarcodePage({
+  const _ReplicationPage({
     required this.status,
     required this.errorText,
     required this.lastKey,
@@ -197,11 +236,11 @@ class _BarcodePage {
     required this.deletes,
   });
 
-  factory _BarcodePage.fromJson(Map<String, dynamic> json) {
+  factory _ReplicationPage.fromJson(Map<String, dynamic> json) {
     final tableData = json['TableData'] as Map<String, dynamic>?;
     final upd = tableData?['TableDataUpd'] as Map<String, dynamic>?;
     final del = tableData?['TableDataDel'] as Map<String, dynamic>?;
-    return _BarcodePage(
+    return _ReplicationPage(
       status: json['Status'] as String? ?? '',
       errorText: json['ErrorText'] as String? ?? '',
       lastKey: json['LastKey'] as String? ?? '',

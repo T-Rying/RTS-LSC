@@ -1,15 +1,19 @@
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// Persists the replicated barcode payload locally.
-/// Stored as a JSON list under a single SharedPreferences key.
-class BarcodeRepository {
-  static const _dataKey = 'inventory.barcodes';
-  static const _metaKey = 'inventory.barcodes.meta';
+/// Persists a replicated entity locally as a single JSON blob under
+/// `inventory.<entityKey>`, with a sibling `inventory.<entityKey>.meta`
+/// that tracks row count and last-replicated timestamp.
+class ReplicationStore {
+  static const _prefix = 'inventory.';
 
   final SharedPreferences _prefs;
+  final String entityKey;
 
-  BarcodeRepository(this._prefs);
+  ReplicationStore(this._prefs, this.entityKey);
+
+  String get _dataKey => '$_prefix$entityKey';
+  String get _metaKey => '$_prefix$entityKey.meta';
 
   Future<void> replace(List<Map<String, dynamic>> rows) async {
     await _prefs.setString(_dataKey, jsonEncode(rows));
@@ -27,11 +31,11 @@ class BarcodeRepository {
     return decoded.whereType<Map<String, dynamic>>().toList();
   }
 
-  BarcodeReplicationMeta? meta() {
+  ReplicationMeta? meta() {
     final raw = _prefs.getString(_metaKey);
     if (raw == null || raw.isEmpty) return null;
     final m = jsonDecode(raw) as Map<String, dynamic>;
-    return BarcodeReplicationMeta(
+    return ReplicationMeta(
       count: (m['count'] as num?)?.toInt() ?? 0,
       lastReplicatedAt: DateTime.tryParse(m['lastReplicatedAt'] as String? ?? ''),
     );
@@ -43,8 +47,8 @@ class BarcodeRepository {
   }
 }
 
-class BarcodeReplicationMeta {
+class ReplicationMeta {
   final int count;
   final DateTime? lastReplicatedAt;
-  const BarcodeReplicationMeta({required this.count, this.lastReplicatedAt});
+  const ReplicationMeta({required this.count, this.lastReplicatedAt});
 }
