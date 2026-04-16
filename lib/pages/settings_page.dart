@@ -53,6 +53,7 @@ class _SettingsPageState extends State<SettingsPage> {
     final clientIdController = TextEditingController(text: _connection?.clientId ?? '');
     final clientSecretController = TextEditingController(text: _connection?.clientSecret ?? '');
     final companyController = TextEditingController(text: _connection?.company ?? '');
+    final companyNameController = TextEditingController(text: _connection?.companyName ?? '');
 
     showCupertinoModalPopup(
       context: context,
@@ -76,6 +77,7 @@ class _SettingsPageState extends State<SettingsPage> {
               clientId: clientIdController.text.trim(),
               clientSecret: clientSecretController.text.trim(),
               company: companyController.text.trim(),
+              companyName: companyNameController.text.trim(),
               posUsername: _connection?.posUsername ?? '',
               posPassword: _connection?.posPassword ?? '',
               deviceType: _connection?.deviceType ?? DeviceType.phone,
@@ -105,13 +107,15 @@ class _SettingsPageState extends State<SettingsPage> {
                 _Field(controller: serverController, placeholder: 'Server Address'),
                 _Field(controller: portController, placeholder: 'Port', keyboard: TextInputType.number),
                 _Field(controller: instanceController, placeholder: 'Server Instance'),
+                _Field(controller: companyController, placeholder: 'Company'),
               ],
               if (selectedType == ConnectionType.saas) ...[
                 _Field(controller: tenantController, placeholder: 'Tenant ID'),
                 _Field(controller: clientIdController, placeholder: 'Client ID'),
                 _Field(controller: clientSecretController, placeholder: 'Client Secret', obscure: true),
+                _Field(controller: companyController, placeholder: 'Environment'),
+                _Field(controller: companyNameController, placeholder: 'Company'),
               ],
-              _Field(controller: companyController, placeholder: 'Company'),
             ],
           ),
         ),
@@ -271,8 +275,12 @@ class _SettingsPageState extends State<SettingsPage> {
                     if (_connection!.type == ConnectionType.saas) ...[
                       _DetailText(_connection!.tenant),
                       _DetailText('Client ID: ${_connection!.clientId}'),
+                      if (_connection!.company.isNotEmpty) _DetailText('Environment: ${_connection!.company}'),
+                      if (_connection!.companyName.isNotEmpty) _DetailText('Company: ${_connection!.companyName}'),
                     ],
-                    if (_connection!.company.isNotEmpty) _DetailText('Company: ${_connection!.company}'),
+                    if (_connection!.type == ConnectionType.onPremise &&
+                        _connection!.company.isNotEmpty)
+                      _DetailText('Company: ${_connection!.company}'),
                   ],
                 ),
               ),
