@@ -1,23 +1,34 @@
 import 'package:flutter/cupertino.dart';
-import '../services/barcode_repository.dart';
+import '../services/replication_store.dart';
 
-class BarcodeListPage extends StatefulWidget {
-  final BarcodeRepository repo;
+typedef RowSummarizer = (String, String) Function(Map<String, dynamic>);
 
-  const BarcodeListPage({super.key, required this.repo});
+/// Generic searchable viewer over a ReplicationStore. Each entity supplies
+/// its own [summarize] to choose the title/subtitle for each row.
+class ReplicationDataPage extends StatefulWidget {
+  final String title;
+  final ReplicationStore store;
+  final RowSummarizer summarize;
+
+  const ReplicationDataPage({
+    super.key,
+    required this.title,
+    required this.store,
+    required this.summarize,
+  });
 
   @override
-  State<BarcodeListPage> createState() => _BarcodeListPageState();
+  State<ReplicationDataPage> createState() => _ReplicationDataPageState();
 }
 
-class _BarcodeListPageState extends State<BarcodeListPage> {
+class _ReplicationDataPageState extends State<ReplicationDataPage> {
   late List<Map<String, dynamic>> _all;
   String _query = '';
 
   @override
   void initState() {
     super.initState();
-    _all = widget.repo.load();
+    _all = widget.store.load();
   }
 
   List<Map<String, dynamic>> get _filtered {
@@ -33,7 +44,7 @@ class _BarcodeListPageState extends State<BarcodeListPage> {
     final list = _filtered;
     return CupertinoPageScaffold(
       navigationBar: CupertinoNavigationBar(
-        middle: Text('Barcodes (${_all.length})'),
+        middle: Text('${widget.title} (${_all.length})'),
       ),
       child: SafeArea(
         child: Column(
@@ -58,7 +69,10 @@ class _BarcodeListPageState extends State<BarcodeListPage> {
                   itemCount: list.length,
                   separatorBuilder: (context, i) =>
                       Container(height: 1, color: CupertinoColors.systemGrey5),
-                  itemBuilder: (context, i) => _BarcodeRow(row: list[i]),
+                  itemBuilder: (context, i) => _DataRow(
+                    row: list[i],
+                    summarize: widget.summarize,
+                  ),
                 ),
               ),
           ],
@@ -68,35 +82,15 @@ class _BarcodeListPageState extends State<BarcodeListPage> {
   }
 }
 
-class _BarcodeRow extends StatelessWidget {
+class _DataRow extends StatelessWidget {
   final Map<String, dynamic> row;
-  const _BarcodeRow({required this.row});
+  final RowSummarizer summarize;
 
-  (String, String) _summary() {
-    String? pick(Iterable<String> keys) {
-      for (final k in keys) {
-        final v = row[k];
-        if (v != null && v.toString().trim().isNotEmpty) return v.toString();
-      }
-      return null;
-    }
-
-    final title = pick(const ['Barcode No.', 'barcode', 'BarcodeNo']) ?? '(no barcode)';
-    final parts = <String>[];
-    final item = pick(const ['Item No.', 'itemNo', 'ItemNo']);
-    final desc = pick(const ['Description', 'description']);
-    final variant = pick(const ['Variant Code']);
-    final uom = pick(const ['Unit of Measure Code']);
-    if (item != null) parts.add(item);
-    if (desc != null) parts.add(desc);
-    if (variant != null) parts.add('Variant $variant');
-    if (uom != null) parts.add(uom);
-    return (title, parts.join(' · '));
-  }
+  const _DataRow({required this.row, required this.summarize});
 
   @override
   Widget build(BuildContext context) {
-    final (title, subtitle) = _summary();
+    final (title, subtitle) = summarize(row);
     return CupertinoButton(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       onPressed: () => _showDetail(context),
