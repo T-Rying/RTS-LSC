@@ -123,6 +123,33 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
+  void _showMobileInventoryDialog() {
+    final storeNoController = TextEditingController(text: _connection?.storeNo ?? '');
+
+    showCupertinoModalPopup(
+      context: context,
+      builder: (context) => _Sheet(
+        title: 'Mobile Inventory',
+        onSave: () async {
+          if (_connection == null) return;
+          _connection!.storeNo = storeNoController.text.trim();
+          await widget.envService.saveConnection(_connection!);
+          setState(() {});
+          if (context.mounted) Navigator.pop(context);
+        },
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text('Used for Mobile Inventory data replication',
+                style: TextStyle(fontSize: 13, color: CupertinoColors.systemGrey)),
+            const SizedBox(height: 12),
+            _Field(controller: storeNoController, placeholder: 'Store No.'),
+          ],
+        ),
+      ),
+    );
+  }
+
   void _showSoftPayDialog() {
     final integratorIdController =
         TextEditingController(text: _connection?.softPayIntegratorId ?? '');
@@ -314,6 +341,39 @@ class _SettingsPageState extends State<SettingsPage> {
                       },
                     ),
             ),
+
+            const SizedBox(height: 24),
+
+            // --- Mobile Inventory ---
+            _SectionTitle('Mobile Inventory', 'Store No.'),
+            const SizedBox(height: 8),
+            if (_connection == null)
+              _Card(
+                child: const Text('Setup a connection first',
+                    style: TextStyle(color: CupertinoColors.systemGrey)),
+              )
+            else
+              GestureDetector(
+                onTap: _showMobileInventoryDialog,
+                child: _Card(
+                  child: Row(
+                    children: [
+                      const Icon(CupertinoIcons.cube_box, color: _primaryColor, size: 20),
+                      const SizedBox(width: 10),
+                      Text(
+                        _connection!.storeNo.isNotEmpty
+                            ? 'Store No.: ${_connection!.storeNo}'
+                            : 'Not configured — tap to setup',
+                        style: TextStyle(
+                          color: _connection!.storeNo.isNotEmpty ? null : CupertinoColors.systemGrey,
+                        ),
+                      ),
+                      const Spacer(),
+                      const Icon(CupertinoIcons.chevron_forward, size: 16, color: CupertinoColors.systemGrey3),
+                    ],
+                  ),
+                ),
+              ),
 
             const SizedBox(height: 24),
 
