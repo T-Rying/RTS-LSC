@@ -16,6 +16,7 @@ class EnvironmentConfig {
   String clientSecret;
   // Shared
   String company;
+  String companyName;
   // POS credentials
   String posUsername;
   String posPassword;
@@ -35,6 +36,7 @@ class EnvironmentConfig {
     this.clientId = '',
     this.clientSecret = '',
     this.company = '',
+    this.companyName = '',
     this.posUsername = '',
     this.posPassword = '',
     required this.deviceType,
@@ -54,6 +56,7 @@ class EnvironmentConfig {
         'clientId': clientId,
         'clientSecret': clientSecret,
         'company': company,
+        'companyName': companyName,
         'posUsername': posUsername,
         'posPassword': posPassword,
         'deviceType': deviceType.name,
@@ -72,6 +75,7 @@ class EnvironmentConfig {
       clientId: json['clientId'] as String? ?? '',
       clientSecret: json['clientSecret'] as String? ?? '',
       company: json['company'] as String? ?? '',
+      companyName: json['companyName'] as String? ?? '',
       posUsername: json['posUsername'] as String? ?? '',
       posPassword: json['posPassword'] as String? ?? '',
       deviceType: json['deviceType'] == 'tablet' ? DeviceType.tablet : DeviceType.phone,
