@@ -33,6 +33,28 @@ class InventoryService {
     return _replicate(config, operation: 'GetItemCategory');
   }
 
+  Future<List<Map<String, dynamic>>> getItemVariants(EnvironmentConfig config) {
+    if (config.storeNo.isEmpty) {
+      throw StateError('Store No. is required (set it in Settings → Mobile Inventory)');
+    }
+    return _replicate(
+      config,
+      operation: 'GetItemVariant',
+      extraFields: {'storeNo': config.storeNo},
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> getSalesPrices(EnvironmentConfig config) {
+    if (config.storeNo.isEmpty) {
+      throw StateError('Store No. is required (set it in Settings → Mobile Inventory)');
+    }
+    return _replicate(
+      config,
+      operation: 'GetSalesPrice',
+      extraFields: {'storeNo': config.storeNo},
+    );
+  }
+
   Future<List<Map<String, dynamic>>> _replicate(
     EnvironmentConfig config, {
     required String operation,
