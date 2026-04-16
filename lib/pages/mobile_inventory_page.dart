@@ -2,8 +2,11 @@ import 'package:flutter/cupertino.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/environment_config.dart';
 import '../services/inventory_service.dart';
+import '../services/item_lookup_service.dart';
 import '../services/log_service.dart';
 import '../services/replication_store.dart';
+import 'item_card_page.dart';
+import 'product_scanner_page.dart';
 import 'replication_data_page.dart';
 
 const Color _primaryColor = Color(0xFF003366);
@@ -41,6 +44,20 @@ final _entities = <_Entity>[
     fetch: (svc, cfg) => svc.getItemCategories(cfg),
     summarize: _summarizeItemCategory,
   ),
+  _Entity(
+    key: 'item_variants',
+    displayName: 'Item Variants',
+    icon: CupertinoIcons.square_grid_2x2,
+    fetch: (svc, cfg) => svc.getItemVariants(cfg),
+    summarize: _summarizeItemVariant,
+  ),
+  _Entity(
+    key: 'sales_prices',
+    displayName: 'Sales Prices',
+    icon: CupertinoIcons.tag,
+    fetch: (svc, cfg) => svc.getSalesPrices(cfg),
+    summarize: _summarizeSalesPrice,
+  ),
 ];
 
 (String, String) _summarizeBarcode(Map<String, dynamic> row) {
@@ -63,6 +80,34 @@ final _entities = <_Entity>[
   final parent = _pick(row, const ['Parent Category']);
   final subtitle = [desc, if (parent != null) 'Parent: $parent'].where((s) => s.isNotEmpty).join(' · ');
   return (title, subtitle);
+}
+
+(String, String) _summarizeItemVariant(Map<String, dynamic> row) {
+  final item = _pick(row, const ['Item No.']) ?? '';
+  final code = _pick(row, const ['Code']) ?? '';
+  final title = [item, code].where((s) => s.isNotEmpty).join(' · ');
+  final desc = _pick(row, const ['Description']) ?? '';
+  return (title.isEmpty ? '(no variant)' : title, desc);
+}
+
+(String, String) _summarizeSalesPrice(Map<String, dynamic> row) {
+  final item = _pick(row, const ['Item No.']) ?? '';
+  final price = _pick(row, const ['Unit Price']) ?? _pick(row, const ['Sales Price']) ?? '';
+  final currency = _pick(row, const ['Currency Code']);
+  final title = [item, if (price.isNotEmpty) price, ?currency]
+      .where((s) => s.isNotEmpty)
+      .join(' · ');
+  final parts = <String>[];
+  final variant = _pick(row, const ['Variant Code']);
+  final uom = _pick(row, const ['Unit of Measure Code']);
+  final salesType = _pick(row, const ['Sales Type']);
+  final salesCode = _pick(row, const ['Sales Code']);
+  if (variant != null) parts.add('Variant $variant');
+  if (uom != null) parts.add(uom);
+  if (salesType != null) {
+    parts.add(salesCode != null ? '$salesType: $salesCode' : salesType);
+  }
+  return (title.isEmpty ? '(no price)' : title, parts.join(' · '));
 }
 
 String? _pick(Map<String, dynamic> row, Iterable<String> keys) {
@@ -104,6 +149,11 @@ class _MobileInventoryPageState extends State<MobileInventoryPage> {
             : ListView(
                 padding: const EdgeInsets.all(20),
                 children: [
+                  const Text('Lookup',
+                      style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 8),
+                  _ScanItemCard(prefs: _prefs!),
+                  const SizedBox(height: 20),
                   const Text('Replication',
                       style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
                   const SizedBox(height: 8),
@@ -117,6 +167,66 @@ class _MobileInventoryPageState extends State<MobileInventoryPage> {
                   ],
                 ],
               ),
+      ),
+    );
+  }
+}
+
+class _ScanItemCard extends StatelessWidget {
+  final SharedPreferences prefs;
+  const _ScanItemCard({required this.prefs});
+
+  Future<void> _scan(BuildContext context) async {
+    final scanned = await Navigator.push<String>(
+      context,
+      CupertinoPageRoute(builder: (_) => const ProductScannerPage()),
+    );
+    if (scanned == null || !context.mounted) return;
+
+    final card = ItemLookupService(prefs).lookup(scanned);
+    if (!context.mounted) return;
+    Navigator.push(
+      context,
+      CupertinoPageRoute(
+        builder: (_) => ItemCardPage(scannedBarcode: scanned, card: card),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: CupertinoColors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: CupertinoColors.systemGrey5),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: const [
+              Icon(CupertinoIcons.barcode_viewfinder, color: _primaryColor, size: 22),
+              SizedBox(width: 10),
+              Expanded(
+                child: Text('Scan Item',
+                    style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'Scan a product barcode to look up the item from replicated data.',
+            style: TextStyle(fontSize: 13, color: CupertinoColors.systemGrey),
+          ),
+          const SizedBox(height: 14),
+          CupertinoButton.filled(
+            padding: const EdgeInsets.symmetric(vertical: 10),
+            onPressed: () => _scan(context),
+            child: const Text('Scan'),
+          ),
+        ],
       ),
     );
   }
