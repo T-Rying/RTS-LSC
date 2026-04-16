@@ -1,0 +1,214 @@
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+import '../models/environment_config.dart';
+import 'auth_service.dart';
+import 'log_service.dart';
+
+/// SOAP client for the ODataRequest codeunit (Mobile Inventory replication).
+class InventoryService {
+  static const _bcSaasBaseUrl = 'https://api.businesscentral.dynamics.com/v2.0';
+  static const _soapNamespace = 'urn:microsoft-dynamics-schemas/codeunit/ODataRequest';
+  static const _batchSize = 1000;
+  static const _maxPages = 200; // safety cap (200 × 1000 = 200k rows)
+
+  final _log = LogService.instance;
+  final AuthService _auth;
+
+  InventoryService({AuthService? auth}) : _auth = auth ?? AuthService.instance;
+
+  Uri _endpointFor(EnvironmentConfig config) {
+    if (config.type != ConnectionType.saas) {
+      throw StateError('Mobile Inventory currently supports SaaS connections only');
+    }
+    final tenant = Uri.encodeComponent(config.tenant);
+    final env = Uri.encodeComponent(config.company);
+    final company = Uri.encodeComponent(config.companyName);
+    return Uri.parse('$_bcSaasBaseUrl/$tenant/$env/WS/$company/Codeunit/ODataRequest');
+  }
+
+  /// Fetches all barcode records from BC, paginating until `EndOfTable=true`.
+  /// Each row is a flat `Map<FieldName, FieldValue>` based on the replication
+  /// schema (`RecRefJson.RecordFields`).
+  Future<List<Map<String, dynamic>>> getBarcodes(EnvironmentConfig config) async {
+    if (config.storeNo.isEmpty) {
+      throw StateError('Store No. is required (set it in Settings → Mobile Inventory)');
+    }
+
+    final all = <Map<String, dynamic>>[];
+    var lastKey = '';
+    var lastEntryNo = 0;
+    var fullRepl = true;
+
+    for (var page = 1; page <= _maxPages; page++) {
+      final result = await _fetchBarcodePage(
+        config,
+        fullRepl: fullRepl,
+        lastKey: lastKey,
+        lastEntryNo: lastEntryNo,
+      );
+
+      if (result.status.toLowerCase() != 'ok') {
+        throw HttpException('BC replication error: ${result.errorText}');
+      }
+
+      all.addAll(result.upserts);
+      _log.info(
+        'InventoryService: page $page — ${result.upserts.length} upserts '
+        '(total ${all.length}), endOfTable=${result.endOfTable}',
+      );
+
+      if (result.endOfTable) return all;
+
+      lastKey = result.lastKey;
+      lastEntryNo = result.lastEntryNo;
+      fullRepl = false;
+    }
+
+    throw const HttpException('Replication exceeded safety cap');
+  }
+
+  Future<_BarcodePage> _fetchBarcodePage(
+    EnvironmentConfig config, {
+    required bool fullRepl,
+    required String lastKey,
+    required int lastEntryNo,
+  }) async {
+    final token = await _auth.getAccessToken(config);
+    final url = _endpointFor(config);
+
+    final body = '''<?xml version="1.0" encoding="utf-8"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"
+               xmlns:ns="$_soapNamespace">
+  <soap:Body>
+    <ns:GetBarcode>
+      <ns:storeNo>${_xmlEscape(config.storeNo)}</ns:storeNo>
+      <ns:batchSize>$_batchSize</ns:batchSize>
+      <ns:fullRepl>$fullRepl</ns:fullRepl>
+      <ns:lastKey>${_xmlEscape(lastKey)}</ns:lastKey>
+      <ns:lastEntryNo>$lastEntryNo</ns:lastEntryNo>
+    </ns:GetBarcode>
+  </soap:Body>
+</soap:Envelope>''';
+
+    final response = await http.post(
+      url,
+      headers: {
+        'Authorization': 'Bearer $token',
+        'Content-Type': 'text/xml; charset=utf-8',
+        'SOAPAction': '$_soapNamespace:GetBarcode',
+      },
+      body: body,
+    );
+
+    if (response.statusCode != 200) {
+      _log.error('InventoryService: GetBarcode failed (${response.statusCode}): ${response.body}');
+      throw HttpException(
+        'GetBarcode failed (${response.statusCode}): ${_extractFaultString(response.body) ?? response.body}',
+      );
+    }
+
+    final payload = _extractReturnValue(response.body);
+    if (payload == null) {
+      throw const HttpException('GetBarcode response missing <return_value>');
+    }
+
+    final json = jsonDecode(payload);
+    if (json is! Map<String, dynamic>) {
+      throw HttpException('Unexpected payload shape: ${payload.substring(0, payload.length.clamp(0, 200))}');
+    }
+
+    return _BarcodePage.fromJson(json);
+  }
+
+  static List<Map<String, dynamic>> _parseRecRef(Map<String, dynamic>? recRefJson) {
+    if (recRefJson == null) return const [];
+    final fields = recRefJson['RecordFields'] as List? ?? const [];
+    final indexToName = <int, String>{};
+    for (final f in fields) {
+      if (f is! Map) continue;
+      final idx = (f['FieldIndex'] as num?)?.toInt();
+      final name = f['FieldName'] as String?;
+      if (idx != null && name != null) indexToName[idx] = name;
+    }
+
+    final records = recRefJson['Records'] as List? ?? const [];
+    final rows = <Map<String, dynamic>>[];
+    for (final r in records) {
+      if (r is! Map) continue;
+      final row = <String, dynamic>{};
+      final recFields = r['Fields'] as List? ?? const [];
+      for (final field in recFields) {
+        if (field is! Map) continue;
+        final idx = (field['FieldIndex'] as num?)?.toInt();
+        if (idx == null) continue;
+        final name = indexToName[idx];
+        if (name == null) continue;
+        row[name] = field['FieldValue'];
+      }
+      if (row.isNotEmpty) rows.add(row);
+    }
+    return rows;
+  }
+
+  static String? _extractReturnValue(String soapBody) {
+    final match = RegExp(
+      r'<(?:\w+:)?return_value[^>]*>([\s\S]*?)</(?:\w+:)?return_value>',
+    ).firstMatch(soapBody);
+    if (match == null) return null;
+    return _xmlUnescape(match.group(1)!);
+  }
+
+  static String? _extractFaultString(String soapBody) {
+    final m = RegExp(r'<faultstring[^>]*>([\s\S]*?)</faultstring>').firstMatch(soapBody);
+    return m == null ? null : _xmlUnescape(m.group(1)!).trim();
+  }
+
+  static String _xmlEscape(String s) => s
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&apos;');
+
+  static String _xmlUnescape(String s) => s
+      .replaceAll('&lt;', '<')
+      .replaceAll('&gt;', '>')
+      .replaceAll('&quot;', '"')
+      .replaceAll('&apos;', "'")
+      .replaceAll('&amp;', '&');
+}
+
+class _BarcodePage {
+  final String status;
+  final String errorText;
+  final String lastKey;
+  final int lastEntryNo;
+  final bool endOfTable;
+  final List<Map<String, dynamic>> upserts;
+  final List<Map<String, dynamic>> deletes;
+
+  const _BarcodePage({
+    required this.status,
+    required this.errorText,
+    required this.lastKey,
+    required this.lastEntryNo,
+    required this.endOfTable,
+    required this.upserts,
+    required this.deletes,
+  });
+
+  factory _BarcodePage.fromJson(Map<String, dynamic> json) {
+    final tableData = json['TableData'] as Map<String, dynamic>?;
+    final upd = tableData?['TableDataUpd'] as Map<String, dynamic>?;
+    final del = tableData?['TableDataDel'] as Map<String, dynamic>?;
+    return _BarcodePage(
+      status: json['Status'] as String? ?? '',
+      errorText: json['ErrorText'] as String? ?? '',
+      lastKey: json['LastKey'] as String? ?? '',
+      lastEntryNo: (json['LastEntryNo'] as num?)?.toInt() ?? 0,
+      endOfTable: json['EndOfTable'] as bool? ?? true,
+      upserts: InventoryService._parseRecRef(upd?['RecRefJson'] as Map<String, dynamic>?),
+      deletes: InventoryService._parseRecRef(del?['RecRefJson'] as Map<String, dynamic>?),
+    );
+  }
+}

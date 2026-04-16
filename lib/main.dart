@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/cupertino.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'models/environment_config.dart';
+import 'pages/mobile_inventory_page.dart';
 import 'pages/pos_page.dart';
 import 'pages/settings_page.dart';
 import 'services/environment_service.dart';
@@ -145,7 +146,24 @@ class _HomePageState extends State<HomePage> {
                 icon: CupertinoIcons.cube_box,
                 label: 'Mobile Inventory',
                 onTap: () {
-                  // TODO: Navigate to Mobile Inventory module
+                  if (_connection == null) {
+                    _showAlert('Configure a connection in Settings first');
+                    return;
+                  }
+                  if (_connection!.type != ConnectionType.saas) {
+                    _showAlert('Mobile Inventory currently supports SaaS connections only');
+                    return;
+                  }
+                  if (_connection!.storeNo.isEmpty) {
+                    _showAlert('Set Store No. in Settings → Mobile Inventory first');
+                    return;
+                  }
+                  Navigator.push(
+                    context,
+                    CupertinoPageRoute(
+                      builder: (_) => MobileInventoryPage(config: _connection!),
+                    ),
+                  );
                 },
               ),
               const SizedBox(height: 16),
