@@ -81,15 +81,17 @@ class _BarcodeRow extends StatelessWidget {
       return null;
     }
 
-    final title = pick(const ['barcode', 'Barcode', 'BarcodeNo', 'barcodeNo', 'no', 'No']) ?? '(no barcode)';
-    final subtitleParts = <String>[];
-    final item = pick(const ['itemNo', 'ItemNo', 'item', 'Item']);
-    final desc = pick(const ['description', 'Description']);
-    final uom = pick(const ['uom', 'UnitOfMeasure', 'unitOfMeasure']);
-    if (item != null) subtitleParts.add(item);
-    if (desc != null) subtitleParts.add(desc);
-    if (uom != null) subtitleParts.add(uom);
-    return (title, subtitleParts.join(' · '));
+    final title = pick(const ['Barcode No.', 'barcode', 'BarcodeNo']) ?? '(no barcode)';
+    final parts = <String>[];
+    final item = pick(const ['Item No.', 'itemNo', 'ItemNo']);
+    final desc = pick(const ['Description', 'description']);
+    final variant = pick(const ['Variant Code']);
+    final uom = pick(const ['Unit of Measure Code']);
+    if (item != null) parts.add(item);
+    if (desc != null) parts.add(desc);
+    if (variant != null) parts.add('Variant $variant');
+    if (uom != null) parts.add(uom);
+    return (title, parts.join(' · '));
   }
 
   @override

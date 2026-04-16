@@ -8,6 +8,8 @@ import 'log_service.dart';
 class InventoryService {
   static const _bcSaasBaseUrl = 'https://api.businesscentral.dynamics.com/v2.0';
   static const _soapNamespace = 'urn:microsoft-dynamics-schemas/codeunit/ODataRequest';
+  static const _batchSize = 1000;
+  static const _maxPages = 200; // safety cap (200 × 1000 = 200k rows)
 
   final _log = LogService.instance;
   final AuthService _auth;
@@ -24,13 +26,53 @@ class InventoryService {
     return Uri.parse('$_bcSaasBaseUrl/$tenant/$env/WS/$company/Codeunit/ODataRequest');
   }
 
-  /// Calls the GetBarcode codeunit. Returns the raw payload string from
-  /// `<return_value>`, which BC usually fills with JSON text.
-  Future<String> getBarcodeRaw(EnvironmentConfig config) async {
+  /// Fetches all barcode records from BC, paginating until `EndOfTable=true`.
+  /// Each row is a flat `Map<FieldName, FieldValue>` based on the replication
+  /// schema (`RecRefJson.RecordFields`).
+  Future<List<Map<String, dynamic>>> getBarcodes(EnvironmentConfig config) async {
     if (config.storeNo.isEmpty) {
       throw StateError('Store No. is required (set it in Settings → Mobile Inventory)');
     }
 
+    final all = <Map<String, dynamic>>[];
+    var lastKey = '';
+    var lastEntryNo = 0;
+    var fullRepl = true;
+
+    for (var page = 1; page <= _maxPages; page++) {
+      final result = await _fetchBarcodePage(
+        config,
+        fullRepl: fullRepl,
+        lastKey: lastKey,
+        lastEntryNo: lastEntryNo,
+      );
+
+      if (result.status.toLowerCase() != 'ok') {
+        throw HttpException('BC replication error: ${result.errorText}');
+      }
+
+      all.addAll(result.upserts);
+      _log.info(
+        'InventoryService: page $page — ${result.upserts.length} upserts '
+        '(total ${all.length}), endOfTable=${result.endOfTable}',
+      );
+
+      if (result.endOfTable) return all;
+
+      lastKey = result.lastKey;
+      lastEntryNo = result.lastEntryNo;
+      fullRepl = false;
+    }
+
+    throw const HttpException('Replication exceeded safety cap');
+  }
+
+  Future<_BarcodePage> _fetchBarcodePage(
+    EnvironmentConfig config, {
+    required bool fullRepl,
+    required String lastKey,
+    required int lastEntryNo,
+  }) async {
     final token = await _auth.getAccessToken(config);
     final url = _endpointFor(config);
 
@@ -40,15 +82,13 @@ class InventoryService {
   <soap:Body>
     <ns:GetBarcode>
       <ns:storeNo>${_xmlEscape(config.storeNo)}</ns:storeNo>
-      <ns:batchSize>1000</ns:batchSize>
-      <ns:fullRepl>true</ns:fullRepl>
-      <ns:lastKey></ns:lastKey>
-      <ns:lastEntryNo>0</ns:lastEntryNo>
+      <ns:batchSize>$_batchSize</ns:batchSize>
+      <ns:fullRepl>$fullRepl</ns:fullRepl>
+      <ns:lastKey>${_xmlEscape(lastKey)}</ns:lastKey>
+      <ns:lastEntryNo>$lastEntryNo</ns:lastEntryNo>
     </ns:GetBarcode>
   </soap:Body>
 </soap:Envelope>''';
-
-    _log.info('InventoryService: POST $url (GetBarcode, store=${config.storeNo})');
 
     final response = await http.post(
       url,
@@ -71,35 +111,43 @@ class InventoryService {
     if (payload == null) {
       throw const HttpException('GetBarcode response missing <return_value>');
     }
-    _log.info('InventoryService: GetBarcode ok, ${payload.length} chars returned');
-    return payload;
+
+    final json = jsonDecode(payload);
+    if (json is! Map<String, dynamic>) {
+      throw HttpException('Unexpected payload shape: ${payload.substring(0, payload.length.clamp(0, 200))}');
+    }
+
+    return _BarcodePage.fromJson(json);
   }
 
-  /// Parses the return_value as JSON and extracts a list of barcode rows.
-  /// Accepts either a bare JSON array or an object with a common wrapper key.
-  Future<List<Map<String, dynamic>>> getBarcodes(EnvironmentConfig config) async {
-    final raw = await getBarcodeRaw(config);
-    final decoded = _tryDecodeJson(raw);
-    if (decoded is List) {
-      return decoded.whereType<Map<String, dynamic>>().toList();
+  static List<Map<String, dynamic>> _parseRecRef(Map<String, dynamic>? recRefJson) {
+    if (recRefJson == null) return const [];
+    final fields = recRefJson['RecordFields'] as List? ?? const [];
+    final indexToName = <int, String>{};
+    for (final f in fields) {
+      if (f is! Map) continue;
+      final idx = (f['FieldIndex'] as num?)?.toInt();
+      final name = f['FieldName'] as String?;
+      if (idx != null && name != null) indexToName[idx] = name;
     }
-    if (decoded is Map<String, dynamic>) {
-      for (final key in const ['barcodes', 'Barcodes', 'value', 'data', 'items']) {
-        final v = decoded[key];
-        if (v is List) return v.whereType<Map<String, dynamic>>().toList();
+
+    final records = recRefJson['Records'] as List? ?? const [];
+    final rows = <Map<String, dynamic>>[];
+    for (final r in records) {
+      if (r is! Map) continue;
+      final row = <String, dynamic>{};
+      final recFields = r['Fields'] as List? ?? const [];
+      for (final field in recFields) {
+        if (field is! Map) continue;
+        final idx = (field['FieldIndex'] as num?)?.toInt();
+        if (idx == null) continue;
+        final name = indexToName[idx];
+        if (name == null) continue;
+        row[name] = field['FieldValue'];
       }
+      if (row.isNotEmpty) rows.add(row);
     }
-    throw HttpException('Unexpected payload shape: ${raw.substring(0, raw.length.clamp(0, 200))}');
-  }
-
-  static dynamic _tryDecodeJson(String raw) {
-    final trimmed = raw.trim();
-    if (trimmed.isEmpty) return null;
-    try {
-      return jsonDecode(trimmed);
-    } catch (_) {
-      return null;
-    }
+    return rows;
   }
 
   static String? _extractReturnValue(String soapBody) {
@@ -128,4 +176,39 @@ class InventoryService {
       .replaceAll('&quot;', '"')
       .replaceAll('&apos;', "'")
       .replaceAll('&amp;', '&');
+}
+
+class _BarcodePage {
+  final String status;
+  final String errorText;
+  final String lastKey;
+  final int lastEntryNo;
+  final bool endOfTable;
+  final List<Map<String, dynamic>> upserts;
+  final List<Map<String, dynamic>> deletes;
+
+  const _BarcodePage({
+    required this.status,
+    required this.errorText,
+    required this.lastKey,
+    required this.lastEntryNo,
+    required this.endOfTable,
+    required this.upserts,
+    required this.deletes,
+  });
+
+  factory _BarcodePage.fromJson(Map<String, dynamic> json) {
+    final tableData = json['TableData'] as Map<String, dynamic>?;
+    final upd = tableData?['TableDataUpd'] as Map<String, dynamic>?;
+    final del = tableData?['TableDataDel'] as Map<String, dynamic>?;
+    return _BarcodePage(
+      status: json['Status'] as String? ?? '',
+      errorText: json['ErrorText'] as String? ?? '',
+      lastKey: json['LastKey'] as String? ?? '',
+      lastEntryNo: (json['LastEntryNo'] as num?)?.toInt() ?? 0,
+      endOfTable: json['EndOfTable'] as bool? ?? true,
+      upserts: InventoryService._parseRecRef(upd?['RecRefJson'] as Map<String, dynamic>?),
+      deletes: InventoryService._parseRecRef(del?['RecRefJson'] as Map<String, dynamic>?),
+    );
+  }
 }
