@@ -148,6 +148,7 @@ class MobileInventoryPage extends StatefulWidget {
 
 class _MobileInventoryPageState extends State<MobileInventoryPage> {
   SharedPreferences? _prefs;
+  final _log = LogService.instance;
 
   @override
   void initState() {
@@ -161,7 +162,14 @@ class _MobileInventoryPageState extends State<MobileInventoryPage> {
   @override
   Widget build(BuildContext context) {
     return CupertinoPageScaffold(
-      navigationBar: const CupertinoNavigationBar(middle: Text('Mobile Inventory')),
+      navigationBar: CupertinoNavigationBar(
+        middle: const Text('Mobile Inventory'),
+        trailing: CupertinoButton(
+          padding: EdgeInsets.zero,
+          onPressed: _log.share,
+          child: const Icon(CupertinoIcons.paperplane),
+        ),
+      ),
       child: SafeArea(
         child: _prefs == null
             ? const Center(child: CupertinoActivityIndicator())
