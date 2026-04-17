@@ -155,7 +155,15 @@ class InventoryService {
       throw HttpException('Unexpected payload shape: ${payload.substring(0, payload.length.clamp(0, 200))}');
     }
 
-    return _ReplicationPage.fromJson(json);
+    final page = _ReplicationPage.fromJson(json);
+    if (page.upserts.isEmpty && page.deletes.isEmpty) {
+      _log.debug(
+        'InventoryService: $operation returned 0 rows — top-level keys: ${json.keys.toList()} · '
+        'status="${page.status}" endOfTable=${page.endOfTable} · '
+        'payload snippet: ${payload.substring(0, payload.length.clamp(0, 500))}',
+      );
+    }
+    return page;
   }
 
   Uri _endpointFor(EnvironmentConfig config) {
