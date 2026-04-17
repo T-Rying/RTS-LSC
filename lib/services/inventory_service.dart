@@ -245,7 +245,8 @@ class InventoryService {
       if (idx != null && name != null) indexToName[idx] = name;
     }
 
-    final records = (dynDataSet['DataSetRecords'] as List?)
+    final records = (dynDataSet['DataSetRows'] as List?)
+        ?? (dynDataSet['DataSetRecords'] as List?)
         ?? (dynDataSet['Records'] as List?)
         ?? const [];
     final rows = <Map<String, dynamic>>[];
