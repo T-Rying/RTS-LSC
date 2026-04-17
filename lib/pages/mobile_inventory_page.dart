@@ -58,6 +58,13 @@ final _entities = <_Entity>[
     fetch: (svc, cfg) => svc.getSalesPrices(cfg),
     summarize: _summarizeSalesPrice,
   ),
+  _Entity(
+    key: 'item_unit_of_measures',
+    displayName: 'Item Units of Measure',
+    icon: CupertinoIcons.cube_box,
+    fetch: (svc, cfg) => svc.getItemUnitOfMeasures(cfg),
+    summarize: _summarizeItemUnitOfMeasure,
+  ),
 ];
 
 (String, String) _summarizeBarcode(Map<String, dynamic> row) {
@@ -108,6 +115,18 @@ final _entities = <_Entity>[
     parts.add(salesCode != null ? '$salesType: $salesCode' : salesType);
   }
   return (title.isEmpty ? '(no price)' : title, parts.join(' · '));
+}
+
+(String, String) _summarizeItemUnitOfMeasure(Map<String, dynamic> row) {
+  final item = _pick(row, const ['Item No.']) ?? '';
+  final code = _pick(row, const ['Code']) ?? '';
+  final title = [item, code].where((s) => s.isNotEmpty).join(' · ');
+  final parts = <String>[];
+  final qtyPer = _pick(row, const ['Qty. per Unit of Measure']);
+  final description = _pick(row, const ['Description']);
+  if (qtyPer != null) parts.add('Qty/UOM $qtyPer');
+  if (description != null) parts.add(description);
+  return (title.isEmpty ? '(no UOM)' : title, parts.join(' · '));
 }
 
 String? _pick(Map<String, dynamic> row, Iterable<String> keys) {
@@ -292,6 +311,36 @@ class _EntityCardState extends State<_EntityCard> {
     );
   }
 
+  Future<void> _deleteData() async {
+    final confirmed = await showCupertinoDialog<bool>(
+      context: context,
+      builder: (ctx) => CupertinoAlertDialog(
+        title: Text('Delete ${widget.entity.displayName}?'),
+        content: const Text(
+          'This will remove the locally stored data. You can replicate it again at any time.',
+        ),
+        actions: [
+          CupertinoDialogAction(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          CupertinoDialogAction(
+            isDestructiveAction: true,
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await _store.clear();
+    if (!mounted) return;
+    setState(() {
+      _meta = _store.meta();
+      _error = null;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final hasData = (_meta?.count ?? 0) > 0;
@@ -347,6 +396,15 @@ class _EntityCardState extends State<_EntityCard> {
                 ),
               ),
             ],
+          ),
+          const SizedBox(height: 8),
+          CupertinoButton(
+            padding: const EdgeInsets.symmetric(vertical: 10),
+            onPressed: hasData && !_loading ? _deleteData : null,
+            child: const Text(
+              'Delete Local Data',
+              style: TextStyle(color: CupertinoColors.destructiveRed),
+            ),
           ),
           if (_error != null) ...[
             const SizedBox(height: 12),
