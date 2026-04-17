@@ -34,13 +34,17 @@ String renderZpl(LabelDesign design, Map<String, String> data, {int quantity = 1
       switch (element.type) {
         case LabelElementType.text:
           final text = element.text ?? '';
-          buf.writeln('^A0N,$h,$h');
+          final fit = _fitZplText(text, w, h);
+          buf.writeln('^A0N,${fit.fontHeight},${fit.fontHeight}');
           // ^FB <width>,<maxLines>,<lineSpace>,<justify>,<hangIndent>
-          buf.writeln('^FB$w,1,0,L,0^FD${_zplEscape(text)}^FS');
+          buf.writeln(
+              '^FB$w,${fit.maxLines},0,L,0^FD${_zplEscape(text)}^FS');
         case LabelElementType.field:
           final value = data[element.fieldKey] ?? '';
-          buf.writeln('^A0N,$h,$h');
-          buf.writeln('^FB$w,1,0,L,0^FD${_zplEscape(value)}^FS');
+          final fit = _fitZplText(value, w, h);
+          buf.writeln('^A0N,${fit.fontHeight},${fit.fontHeight}');
+          buf.writeln(
+              '^FB$w,${fit.maxLines},0,L,0^FD${_zplEscape(value)}^FS');
         case LabelElementType.barcode:
           final value = data[element.fieldKey] ?? '';
           // A Code 128 symbol is roughly value.length * 11 modules plus
@@ -97,6 +101,45 @@ Map<String, String> demoBinding() => const {
       'Item Category Code': 'DEMO',
       'Item Category Description': 'Demo category',
     };
+
+class _ZplTextFit {
+  final int fontHeight;
+  final int maxLines;
+  const _ZplTextFit({required this.fontHeight, required this.maxLines});
+}
+
+/// Picks the largest ZPL font height at which [text] wraps inside
+/// [widthDots] and fits within [heightDots]. Returns both the height
+/// and the maxLines count to pass to ^FB. The algorithm mirrors the
+/// in-app preview so printed output matches what the user sees.
+///
+/// Character width for the ^A0 font is approximately 0.6 × font height.
+/// The ^FB command wraps at spaces; we assume a conservative average
+/// line length of (widthDots / charWidth) characters.
+_ZplTextFit _fitZplText(String text, int widthDots, int heightDots) {
+  const lineFactor = 1.15;
+  if (text.isEmpty) {
+    final h = (heightDots * 0.9).clamp(10, 800).toInt();
+    return _ZplTextFit(fontHeight: h, maxLines: 1);
+  }
+
+  int bestHeight = 10;
+  int bestLines = 1;
+  for (var fontH = 10; fontH <= heightDots && fontH <= 800; fontH++) {
+    final charWidth = (fontH * 0.6).ceil();
+    if (charWidth <= 0) continue;
+    final charsPerLine = (widthDots ~/ charWidth).clamp(1, 200);
+    final lineCount = (text.length / charsPerLine).ceil().clamp(1, 50);
+    final totalH = (lineCount * fontH * lineFactor).ceil();
+    if (totalH <= heightDots) {
+      bestHeight = fontH;
+      bestLines = lineCount;
+    } else {
+      break;
+    }
+  }
+  return _ZplTextFit(fontHeight: bestHeight, maxLines: bestLines);
+}
 
 String _zplEscape(String s) {
   // ZPL treats ^ and ~ as control characters. Also strip newlines so
