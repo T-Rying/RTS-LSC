@@ -5,6 +5,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../services/log_service.dart';
 import '../services/zebra_printer_service.dart';
+import 'label_designs_page.dart';
+import 'label_print_job_page.dart';
 
 const Color _primaryColor = Color(0xFF003366);
 const String _selectedPrinterKey = 'label_printing.selected_printer';
@@ -151,6 +153,33 @@ class _LabelPrintingPageState extends State<LabelPrintingPage> {
                     busy: _printing,
                     onPrintTest: _selected == null || _printing ? null : _printTest,
                     onClear: _selected == null ? null : _clearSelected,
+                  ),
+                  const SizedBox(height: 20),
+                  const Text('Design & Print',
+                      style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 8),
+                  _NavRow(
+                    icon: CupertinoIcons.square_stack,
+                    title: 'Label Designs',
+                    subtitle: 'Create, import, or export label layouts.',
+                    onTap: () => Navigator.push(
+                      context,
+                      CupertinoPageRoute(
+                        builder: (_) => LabelDesignsPage(prefs: _prefs!),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  _NavRow(
+                    icon: CupertinoIcons.printer,
+                    title: 'Print Label',
+                    subtitle: 'Scan an item, pick a design, print or demo.',
+                    onTap: () => Navigator.push(
+                      context,
+                      CupertinoPageRoute(
+                        builder: (_) => LabelPrintJobPage(prefs: _prefs!),
+                      ),
+                    ),
                   ),
                   const SizedBox(height: 20),
                   const Text('Discovery',
@@ -302,6 +331,54 @@ class _ScanCard extends StatelessWidget {
                 : const Text('Scan'),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _NavRow extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+
+  const _NavRow({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: CupertinoColors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: CupertinoColors.systemGrey5),
+        ),
+        child: Row(
+          children: [
+            Icon(icon, color: _primaryColor, size: 22),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title,
+                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 2),
+                  Text(subtitle,
+                      style: const TextStyle(fontSize: 12, color: CupertinoColors.systemGrey)),
+                ],
+              ),
+            ),
+            const Icon(CupertinoIcons.chevron_right, size: 18, color: CupertinoColors.systemGrey3),
+          ],
+        ),
       ),
     );
   }
