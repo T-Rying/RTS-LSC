@@ -27,19 +27,31 @@ String renderZpl(LabelDesign design, Map<String, String> data, {int quantity = 1
     for (final element in design.elements) {
       final x = dots(element.xMm);
       final y = dots(element.yMm);
+      final w = dots(element.widthMm).clamp(10, 2400);
       final h = dots(element.heightMm).clamp(10, 800);
       buf.writeln('^FO$x,$y');
 
       switch (element.type) {
         case LabelElementType.text:
           final text = element.text ?? '';
-          buf.writeln('^A0N,$h,$h^FD${_zplEscape(text)}^FS');
+          buf.writeln('^A0N,$h,$h');
+          // ^FB <width>,<maxLines>,<lineSpace>,<justify>,<hangIndent>
+          buf.writeln('^FB$w,1,0,L,0^FD${_zplEscape(text)}^FS');
         case LabelElementType.field:
           final value = data[element.fieldKey] ?? '';
-          buf.writeln('^A0N,$h,$h^FD${_zplEscape(value)}^FS');
+          buf.writeln('^A0N,$h,$h');
+          buf.writeln('^FB$w,1,0,L,0^FD${_zplEscape(value)}^FS');
         case LabelElementType.barcode:
           final value = data[element.fieldKey] ?? '';
-          buf.writeln('^BY2,3,$h');
+          // A Code 128 symbol is roughly value.length * 11 modules plus
+          // start/stop + quiet zones (~35 modules). Pick the largest
+          // module width that still fits the element's width, clamped
+          // to the ZPL-legal range [1, 10].
+          final modules = (value.length * 11) + 35;
+          final moduleWidth = modules == 0
+              ? 2
+              : (w / modules).floor().clamp(1, 10);
+          buf.writeln('^BY$moduleWidth,3,$h');
           buf.writeln('^BCN,$h,Y,N,N^FD${_zplEscape(value)}^FS');
       }
     }

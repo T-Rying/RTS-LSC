@@ -8,6 +8,7 @@ class LabelElement {
   LabelElementType type;
   double xMm;
   double yMm;
+  double widthMm;
   double heightMm;
   String? text;
   String? fieldKey;
@@ -17,6 +18,7 @@ class LabelElement {
     required this.type,
     required this.xMm,
     required this.yMm,
+    required this.widthMm,
     required this.heightMm,
     this.text,
     this.fieldKey,
@@ -27,6 +29,7 @@ class LabelElement {
         type: type,
         xMm: xMm,
         yMm: yMm,
+        widthMm: widthMm,
         heightMm: heightMm,
         text: text,
         fieldKey: fieldKey,
@@ -37,23 +40,33 @@ class LabelElement {
         'type': type.name,
         'xMm': xMm,
         'yMm': yMm,
+        'widthMm': widthMm,
         'heightMm': heightMm,
         if (text != null) 'text': text,
         if (fieldKey != null) 'fieldKey': fieldKey,
       };
 
-  factory LabelElement.fromJson(Map<String, dynamic> j) => LabelElement(
-        id: j['id'] as String? ?? _newId(),
-        type: LabelElementType.values.firstWhere(
-          (t) => t.name == (j['type'] as String? ?? ''),
-          orElse: () => LabelElementType.text,
-        ),
-        xMm: (j['xMm'] as num?)?.toDouble() ?? 0,
-        yMm: (j['yMm'] as num?)?.toDouble() ?? 0,
-        heightMm: (j['heightMm'] as num?)?.toDouble() ?? 4,
-        text: j['text'] as String?,
-        fieldKey: j['fieldKey'] as String?,
-      );
+  factory LabelElement.fromJson(Map<String, dynamic> j) {
+    final type = LabelElementType.values.firstWhere(
+      (t) => t.name == (j['type'] as String? ?? ''),
+      orElse: () => LabelElementType.text,
+    );
+    final height = (j['heightMm'] as num?)?.toDouble() ?? 4;
+    // Older designs (schema v1) didn't persist widthMm. Pick a sensible
+    // default by type so they still render when first opened.
+    final width = (j['widthMm'] as num?)?.toDouble() ??
+        (type == LabelElementType.barcode ? 40.0 : 30.0);
+    return LabelElement(
+      id: j['id'] as String? ?? _newId(),
+      type: type,
+      xMm: (j['xMm'] as num?)?.toDouble() ?? 0,
+      yMm: (j['yMm'] as num?)?.toDouble() ?? 0,
+      widthMm: width,
+      heightMm: height,
+      text: j['text'] as String?,
+      fieldKey: j['fieldKey'] as String?,
+    );
+  }
 }
 
 class LabelDesign {
