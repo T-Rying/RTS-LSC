@@ -83,8 +83,22 @@ class _LabelDesignerPageState extends State<LabelDesignerPage> {
                   onElementDrag: (id, dx, dy) {
                     setState(() {
                       final element = _design.elements.firstWhere((e) => e.id == id);
-                      element.xMm = (element.xMm + dx).clamp(0, _design.widthMm - 5);
-                      element.yMm = (element.yMm + dy).clamp(0, _design.heightMm - 3);
+                      element.xMm = (element.xMm + dx).clamp(0, _design.widthMm - 2);
+                      element.yMm = (element.yMm + dy).clamp(0, _design.heightMm - 2);
+                      _selectedId = id;
+                    });
+                  },
+                  onElementResize: (id, dx, dy) {
+                    setState(() {
+                      final element = _design.elements.firstWhere((e) => e.id == id);
+                      element.widthMm = (element.widthMm + dx).clamp(
+                        3,
+                        _design.widthMm - element.xMm,
+                      );
+                      element.heightMm = (element.heightMm + dy).clamp(
+                        2,
+                        _design.heightMm - element.yMm,
+                      );
                       _selectedId = id;
                     });
                   },
@@ -179,6 +193,9 @@ class _LabelDesignerPageState extends State<LabelDesignerPage> {
     final xMm = scale == 0 ? 4.0 : (dropOffset.dx / scale).clamp(0, _design.widthMm - 10).toDouble();
     final yMm = scale == 0 ? 4.0 : (dropOffset.dy / scale).clamp(0, _design.heightMm - 5).toDouble();
 
+    final isBarcode = item.kind == _PaletteKind.barcode;
+    final defaultWidth = isBarcode ? 40.0 : 30.0;
+    final defaultHeight = isBarcode ? 12.0 : 4.0;
     final element = LabelElement(
       id: _freshId(),
       type: switch (item.kind) {
@@ -188,7 +205,8 @@ class _LabelDesignerPageState extends State<LabelDesignerPage> {
       },
       xMm: xMm,
       yMm: yMm,
-      heightMm: item.kind == _PaletteKind.barcode ? 12 : 4,
+      widthMm: defaultWidth.clamp(3, _design.widthMm - xMm).toDouble(),
+      heightMm: defaultHeight.clamp(2, _design.heightMm - yMm).toDouble(),
       text: item.kind == _PaletteKind.text ? 'Text' : null,
       fieldKey: item.fieldKey,
     );
@@ -288,8 +306,10 @@ class _LabelDesignerPageState extends State<LabelDesignerPage> {
       _design.widthMm = picked.widthMm;
       _design.heightMm = picked.heightMm;
       for (final element in _design.elements) {
-        element.xMm = element.xMm.clamp(0, _design.widthMm - 5);
-        element.yMm = element.yMm.clamp(0, _design.heightMm - 3);
+        element.xMm = element.xMm.clamp(0, _design.widthMm - 2);
+        element.yMm = element.yMm.clamp(0, _design.heightMm - 2);
+        element.widthMm = element.widthMm.clamp(3, _design.widthMm - element.xMm);
+        element.heightMm = element.heightMm.clamp(2, _design.heightMm - element.yMm);
       }
     });
   }
@@ -427,13 +447,26 @@ class _ElementEditorSheetState extends State<_ElementEditorSheet> {
             ),
             const SizedBox(height: 14),
           ],
+          Text('Width: ${_working.widthMm.toStringAsFixed(1)} mm',
+              style: const TextStyle(fontSize: 13, color: CupertinoColors.systemGrey)),
+          CupertinoSlider(
+            min: 3,
+            max: 150,
+            divisions: 294,
+            value: _working.widthMm.clamp(3, 150),
+            onChanged: (v) {
+              setState(() => _working.widthMm = v);
+              _emit();
+            },
+          ),
+          const SizedBox(height: 8),
           Text('Height: ${_working.heightMm.toStringAsFixed(1)} mm',
               style: const TextStyle(fontSize: 13, color: CupertinoColors.systemGrey)),
           CupertinoSlider(
             min: 2,
-            max: 30,
-            divisions: 56,
-            value: _working.heightMm.clamp(2, 30),
+            max: 80,
+            divisions: 156,
+            value: _working.heightMm.clamp(2, 80),
             onChanged: (v) {
               setState(() => _working.heightMm = v);
               _emit();

@@ -13,6 +13,7 @@ class LabelPreview extends StatelessWidget {
   final double maxHeight;
   final String? selectedElementId;
   final void Function(String elementId, double dxMm, double dyMm)? onElementDrag;
+  final void Function(String elementId, double dxMm, double dyMm)? onElementResize;
   final ValueChanged<String>? onElementTap;
   final VoidCallback? onBackgroundTap;
 
@@ -24,6 +25,7 @@ class LabelPreview extends StatelessWidget {
     this.maxHeight = 500,
     this.selectedElementId,
     this.onElementDrag,
+    this.onElementResize,
     this.onElementTap,
     this.onBackgroundTap,
   });
@@ -64,41 +66,79 @@ class LabelPreview extends StatelessWidget {
   Widget _positioned(LabelElement element, double scale) {
     final left = element.xMm * scale;
     final top = element.yMm * scale;
+    final widthPx = element.widthMm * scale;
     final heightPx = element.heightMm * scale;
     final selected = element.id == selectedElementId;
 
-    Widget child;
+    Widget body;
     switch (element.type) {
       case LabelElementType.text:
-        child = _textBox(element.text ?? '', heightPx, selected);
+        body = _textBox(element.text ?? '', widthPx, heightPx, selected);
       case LabelElementType.field:
         final value = data[element.fieldKey] ?? '<${element.fieldKey ?? '?'}>';
-        child = _textBox(value, heightPx, selected, isField: true);
+        body = _textBox(value, widthPx, heightPx, selected, isField: true);
       case LabelElementType.barcode:
         final value = data[element.fieldKey] ?? '<${element.fieldKey ?? '?'}>';
-        child = _barcodeBox(value, heightPx, scale, selected);
+        body = _barcodeBox(value, widthPx, heightPx, selected);
+    }
+
+    final tappable = GestureDetector(
+      onTap: () => onElementTap?.call(element.id),
+      onPanUpdate: onElementDrag == null
+          ? null
+          : (d) => onElementDrag!(
+                element.id,
+                d.delta.dx / scale,
+                d.delta.dy / scale,
+              ),
+      child: body,
+    );
+
+    if (!selected || onElementResize == null) {
+      return Positioned(left: left, top: top, child: tappable);
     }
 
     return Positioned(
       left: left,
       top: top,
-      child: GestureDetector(
-        onTap: () => onElementTap?.call(element.id),
-        onPanUpdate: onElementDrag == null
-            ? null
-            : (d) => onElementDrag!(
-                  element.id,
-                  d.delta.dx / scale,
-                  d.delta.dy / scale,
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          tappable,
+          Positioned(
+            right: -8,
+            bottom: -8,
+            child: GestureDetector(
+              onPanUpdate: (d) => onElementResize!(
+                element.id,
+                d.delta.dx / scale,
+                d.delta.dy / scale,
+              ),
+              child: Container(
+                width: 20,
+                height: 20,
+                decoration: const BoxDecoration(
+                  color: Color(0xFF003366),
+                  shape: BoxShape.circle,
                 ),
-        child: child,
+                child: const Icon(
+                  CupertinoIcons.arrow_up_left_arrow_down_right,
+                  size: 12,
+                  color: CupertinoColors.white,
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
 
-  Widget _textBox(String text, double heightPx, bool selected, {bool isField = false}) {
+  Widget _textBox(String text, double widthPx, double heightPx, bool selected, {bool isField = false}) {
     final fontSize = heightPx.clamp(8, 80).toDouble();
     return Container(
+      width: widthPx.clamp(10, 2000),
+      height: heightPx.clamp(6, 400),
       padding: const EdgeInsets.symmetric(horizontal: 2),
       decoration: BoxDecoration(
         color: isField ? const Color(0x1A003366) : null,
@@ -107,25 +147,29 @@ class LabelPreview extends StatelessWidget {
           width: selected ? 2 : 1,
         ),
       ),
-      child: Text(
-        text.isEmpty ? ' ' : text,
-        style: TextStyle(
-          fontSize: fontSize,
-          color: CupertinoColors.black,
-          height: 1.0,
+      child: ClipRect(
+        child: Align(
+          alignment: Alignment.centerLeft,
+          child: Text(
+            text.isEmpty ? ' ' : text,
+            style: TextStyle(
+              fontSize: fontSize,
+              color: CupertinoColors.black,
+              height: 1.0,
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.clip,
+            softWrap: false,
+          ),
         ),
-        maxLines: 1,
-        overflow: TextOverflow.visible,
-        softWrap: false,
       ),
     );
   }
 
-  Widget _barcodeBox(String value, double heightPx, double scale, bool selected) {
-    final width = (value.length * 6.0).clamp(80.0, 260.0);
+  Widget _barcodeBox(String value, double widthPx, double heightPx, bool selected) {
     return Container(
-      width: width,
-      height: heightPx + 12,
+      width: widthPx.clamp(20, 2000),
+      height: heightPx.clamp(10, 400),
       decoration: BoxDecoration(
         border: Border.all(
           color: selected ? const Color(0xFF003366) : CupertinoColors.systemGrey3,
@@ -137,11 +181,16 @@ class LabelPreview extends StatelessWidget {
         children: [
           Expanded(
             child: CustomPaint(
-              size: Size(width, heightPx),
+              size: Size(widthPx, heightPx),
               painter: _BarcodeStripePainter(value),
             ),
           ),
-          Text(value, style: const TextStyle(fontSize: 9)),
+          Text(
+            value,
+            style: const TextStyle(fontSize: 9),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
         ],
       ),
     );
