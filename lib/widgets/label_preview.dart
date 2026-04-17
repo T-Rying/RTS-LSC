@@ -1,3 +1,4 @@
+import 'package:barcode_widget/barcode_widget.dart' as bw;
 import 'package:flutter/cupertino.dart';
 
 import '../models/label_design.dart';
@@ -79,7 +80,13 @@ class LabelPreview extends StatelessWidget {
         body = _textBox(value, widthPx, heightPx, selected, isField: true);
       case LabelElementType.barcode:
         final value = data[element.fieldKey] ?? '<${element.fieldKey ?? '?'}>';
-        body = _barcodeBox(value, widthPx, heightPx, selected);
+        body = _barcodeBox(
+          value,
+          widthPx,
+          heightPx,
+          selected,
+          element.barcodeFormat ?? BarcodeFormat.code128,
+        );
     }
 
     final tappable = GestureDetector(
@@ -199,62 +206,63 @@ class LabelPreview extends StatelessWidget {
 
   static const double _lineHeightFactor = 1.15;
 
-  Widget _barcodeBox(String value, double widthPx, double heightPx, bool selected) {
+  Widget _barcodeBox(
+    String value,
+    double widthPx,
+    double heightPx,
+    bool selected,
+    BarcodeFormat format,
+  ) {
+    final safeWidth = widthPx.clamp(20, 2000).toDouble();
+    final safeHeight = heightPx.clamp(10, 400).toDouble();
     return Container(
-      width: widthPx.clamp(20, 2000),
-      height: heightPx.clamp(10, 400),
+      width: safeWidth,
+      height: safeHeight,
+      padding: const EdgeInsets.all(2),
       decoration: BoxDecoration(
         border: Border.all(
           color: selected ? const Color(0xFF003366) : CupertinoColors.systemGrey3,
           width: selected ? 2 : 1,
         ),
       ),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Expanded(
-            child: CustomPaint(
-              size: Size(widthPx, heightPx),
-              painter: _BarcodeStripePainter(value),
+      child: bw.BarcodeWidget(
+        data: value.isEmpty ? ' ' : value,
+        barcode: _toBarcode(format),
+        width: safeWidth - 4,
+        height: safeHeight - 4,
+        drawText: true,
+        style: const TextStyle(fontSize: 9, color: CupertinoColors.black),
+        color: CupertinoColors.black,
+        errorBuilder: (ctx, error) => Center(
+          child: Text(
+            'Invalid for ${format.displayName}',
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              fontSize: 9,
+              color: CupertinoColors.destructiveRed,
             ),
-          ),
-          Text(
-            value,
-            style: const TextStyle(fontSize: 9),
-            maxLines: 1,
+            maxLines: 2,
             overflow: TextOverflow.ellipsis,
           ),
-        ],
+        ),
       ),
     );
   }
-}
 
-/// Pseudo-Code128 stripe pattern for visual preview only — not a valid
-/// barcode. The printer renders the real code-128 symbol from the ZPL
-/// ^BC command at print time.
-class _BarcodeStripePainter extends CustomPainter {
-  final String value;
-
-  _BarcodeStripePainter(this.value);
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()..color = CupertinoColors.black;
-    final hash = value.codeUnits.fold<int>(0, (a, c) => (a * 31 + c) & 0xFFFF);
-    final bars = 40;
-    final barWidth = size.width / bars;
-    for (var i = 0; i < bars; i++) {
-      if (((hash >> (i % 16)) ^ i) & 1 == 1) {
-        canvas.drawRect(
-          Rect.fromLTWH(i * barWidth, 0, barWidth * 0.6, size.height),
-          paint,
-        );
-      }
+  static bw.Barcode _toBarcode(BarcodeFormat f) {
+    switch (f) {
+      case BarcodeFormat.ean13:
+        return bw.Barcode.ean13();
+      case BarcodeFormat.ean8:
+        return bw.Barcode.ean8();
+      case BarcodeFormat.upcA:
+        return bw.Barcode.upcA();
+      case BarcodeFormat.code128:
+        return bw.Barcode.code128();
+      case BarcodeFormat.code39:
+        return bw.Barcode.code39();
+      case BarcodeFormat.qr:
+        return bw.Barcode.qrCode();
     }
   }
-
-  @override
-  bool shouldRepaint(covariant _BarcodeStripePainter oldDelegate) =>
-      oldDelegate.value != value;
 }
