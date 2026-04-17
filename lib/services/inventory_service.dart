@@ -55,6 +55,17 @@ class InventoryService {
     );
   }
 
+  Future<List<Map<String, dynamic>>> getItemUnitOfMeasures(EnvironmentConfig config) {
+    if (config.storeNo.isEmpty) {
+      throw StateError('Store No. is required (set it in Settings → Mobile Inventory)');
+    }
+    return _replicate(
+      config,
+      operation: 'GetItemUnitOfMeasure',
+      extraFields: {'storeNo': config.storeNo},
+    );
+  }
+
   Future<List<Map<String, dynamic>>> _replicate(
     EnvironmentConfig config, {
     required String operation,
