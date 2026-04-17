@@ -3,6 +3,22 @@
 /// preview scale; ZPL output converts to dots at print time.
 enum LabelElementType { text, field, barcode }
 
+/// ZPL-supported barcode symbologies exposed in the designer. Names
+/// match what's shown in the picker. Each maps to a distinct ZPL
+/// command in [renderZpl]; the estimated module count per format is
+/// used to size the bars so the element fills its width.
+enum BarcodeFormat {
+  ean13('EAN-13'),
+  ean8('EAN-8'),
+  upcA('UPC-A'),
+  code128('Code 128'),
+  code39('Code 39'),
+  qr('QR Code');
+
+  final String displayName;
+  const BarcodeFormat(this.displayName);
+}
+
 class LabelElement {
   String id;
   LabelElementType type;
@@ -12,6 +28,7 @@ class LabelElement {
   double heightMm;
   String? text;
   String? fieldKey;
+  BarcodeFormat? barcodeFormat;
 
   LabelElement({
     required this.id,
@@ -22,6 +39,7 @@ class LabelElement {
     required this.heightMm,
     this.text,
     this.fieldKey,
+    this.barcodeFormat,
   });
 
   LabelElement copy() => LabelElement(
@@ -33,6 +51,7 @@ class LabelElement {
         heightMm: heightMm,
         text: text,
         fieldKey: fieldKey,
+        barcodeFormat: barcodeFormat,
       );
 
   Map<String, dynamic> toJson() => {
@@ -44,6 +63,7 @@ class LabelElement {
         'heightMm': heightMm,
         if (text != null) 'text': text,
         if (fieldKey != null) 'fieldKey': fieldKey,
+        if (barcodeFormat != null) 'barcodeFormat': barcodeFormat!.name,
       };
 
   factory LabelElement.fromJson(Map<String, dynamic> j) {
@@ -56,6 +76,19 @@ class LabelElement {
     // default by type so they still render when first opened.
     final width = (j['widthMm'] as num?)?.toDouble() ??
         (type == LabelElementType.barcode ? 40.0 : 30.0);
+    BarcodeFormat? format;
+    if (type == LabelElementType.barcode) {
+      final name = j['barcodeFormat'] as String?;
+      if (name != null) {
+        format = BarcodeFormat.values.firstWhere(
+          (f) => f.name == name,
+          // Older saves (pre-format) were always Code 128.
+          orElse: () => BarcodeFormat.code128,
+        );
+      } else {
+        format = BarcodeFormat.code128;
+      }
+    }
     return LabelElement(
       id: j['id'] as String? ?? _newId(),
       type: type,
@@ -65,6 +98,7 @@ class LabelElement {
       heightMm: height,
       text: j['text'] as String?,
       fieldKey: j['fieldKey'] as String?,
+      barcodeFormat: format,
     );
   }
 }

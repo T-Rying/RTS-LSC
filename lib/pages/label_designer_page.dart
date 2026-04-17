@@ -209,6 +209,7 @@ class _LabelDesignerPageState extends State<LabelDesignerPage> {
       heightMm: defaultHeight.clamp(2, _design.heightMm - yMm).toDouble(),
       text: item.kind == _PaletteKind.text ? 'Text' : null,
       fieldKey: item.fieldKey,
+      barcodeFormat: isBarcode ? BarcodeFormat.ean13 : null,
     );
     setState(() {
       _design.elements.add(element);
@@ -447,6 +448,23 @@ class _ElementEditorSheetState extends State<_ElementEditorSheet> {
             ),
             const SizedBox(height: 14),
           ],
+          if (_working.type == LabelElementType.barcode) ...[
+            const Text('Barcode format',
+                style: TextStyle(fontSize: 13, color: CupertinoColors.systemGrey)),
+            const SizedBox(height: 4),
+            CupertinoButton(
+              padding: const EdgeInsets.symmetric(vertical: 10),
+              color: CupertinoColors.systemGrey6,
+              onPressed: _pickBarcodeFormat,
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                    (_working.barcodeFormat ?? BarcodeFormat.ean13).displayName,
+                    style: const TextStyle(color: CupertinoColors.black)),
+              ),
+            ),
+            const SizedBox(height: 14),
+          ],
           Text('Width: ${_working.widthMm.toStringAsFixed(1)} mm',
               style: const TextStyle(fontSize: 13, color: CupertinoColors.systemGrey)),
           CupertinoSlider(
@@ -495,6 +513,30 @@ class _ElementEditorSheetState extends State<_ElementEditorSheet> {
         ],
       ),
     );
+  }
+
+  Future<void> _pickBarcodeFormat() async {
+    final format = await showCupertinoModalPopup<BarcodeFormat>(
+      context: context,
+      builder: (ctx) => CupertinoActionSheet(
+        title: const Text('Barcode format'),
+        actions: [
+          for (final f in BarcodeFormat.values)
+            CupertinoActionSheetAction(
+              onPressed: () => Navigator.pop(ctx, f),
+              child: Text(f.displayName),
+            ),
+        ],
+        cancelButton: CupertinoActionSheetAction(
+          onPressed: () => Navigator.pop(ctx),
+          child: const Text('Cancel'),
+        ),
+      ),
+    );
+    if (format != null) {
+      setState(() => _working.barcodeFormat = format);
+      _emit();
+    }
   }
 
   Future<void> _pickField() async {
