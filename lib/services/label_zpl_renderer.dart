@@ -47,16 +47,8 @@ String renderZpl(LabelDesign design, Map<String, String> data, {int quantity = 1
               '^FB$w,${fit.maxLines},0,L,0^FD${_zplEscape(value)}^FS');
         case LabelElementType.barcode:
           final value = data[element.fieldKey] ?? '';
-          // A Code 128 symbol is roughly value.length * 11 modules plus
-          // start/stop + quiet zones (~35 modules). Pick the largest
-          // module width that still fits the element's width, clamped
-          // to the ZPL-legal range [1, 10].
-          final modules = (value.length * 11) + 35;
-          final moduleWidth = modules == 0
-              ? 2
-              : (w / modules).floor().clamp(1, 10);
-          buf.writeln('^BY$moduleWidth,3,$h');
-          buf.writeln('^BCN,$h,Y,N,N^FD${_zplEscape(value)}^FS');
+          final format = element.barcodeFormat ?? BarcodeFormat.ean13;
+          buf.write(_renderBarcode(format, value, w, h));
       }
     }
 
@@ -101,6 +93,54 @@ Map<String, String> demoBinding() => const {
       'Item Category Code': 'DEMO',
       'Item Category Description': 'Demo category',
     };
+
+/// Emits the ZPL for a single barcode element. Orientation is always
+/// normal (N), interpretation line is printed below the symbol. The
+/// module width (^BY) is scaled so the symbol fills the element's
+/// width, clamped to the 1–10 dot range ZPL allows.
+String _renderBarcode(BarcodeFormat format, String value, int widthDots, int heightDots) {
+  final buf = StringBuffer();
+  int moduleWidth(int modulesPerSymbol) {
+    if (modulesPerSymbol <= 0) return 2;
+    return (widthDots / modulesPerSymbol).floor().clamp(1, 10);
+  }
+
+  switch (format) {
+    case BarcodeFormat.ean13:
+      // EAN-13 fixed symbol width ≈ 95 modules + 2 × 11 quiet zones.
+      final mw = moduleWidth(117);
+      buf.writeln('^BY$mw,3,$heightDots');
+      buf.writeln('^BEN,$heightDots,Y,N^FD${_zplEscape(value)}^FS');
+    case BarcodeFormat.ean8:
+      final mw = moduleWidth(81);
+      buf.writeln('^BY$mw,3,$heightDots');
+      buf.writeln('^B8N,$heightDots,Y,N^FD${_zplEscape(value)}^FS');
+    case BarcodeFormat.upcA:
+      final mw = moduleWidth(113);
+      buf.writeln('^BY$mw,3,$heightDots');
+      buf.writeln('^BUN,$heightDots,Y,N,Y^FD${_zplEscape(value)}^FS');
+    case BarcodeFormat.code128:
+      final modules = (value.length * 11) + 35;
+      final mw = moduleWidth(modules);
+      buf.writeln('^BY$mw,3,$heightDots');
+      buf.writeln('^BCN,$heightDots,Y,N,N^FD${_zplEscape(value)}^FS');
+    case BarcodeFormat.code39:
+      final modules = (value.length * 13) + 30;
+      final mw = moduleWidth(modules);
+      buf.writeln('^BY$mw,3,$heightDots');
+      buf.writeln('^B3N,N,$heightDots,Y,N^FD${_zplEscape(value)}^FS');
+    case BarcodeFormat.qr:
+      // QR is square. Magnification is a 1–10 factor on the module
+      // size — derive it from the element's shorter side so the QR
+      // fits the box.
+      final shorter = widthDots < heightDots ? widthDots : heightDots;
+      final magnification = (shorter / 40).clamp(1, 10).round();
+      buf.writeln('^BQN,2,$magnification');
+      buf.writeln('^FDLA,${_zplEscape(value)}^FS');
+  }
+
+  return buf.toString();
+}
 
 class _ZplTextFit {
   final int fontHeight;
