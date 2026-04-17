@@ -4,6 +4,13 @@
 <dict>
 	<key>NSCameraUsageDescription</key>
 	<string>Camera access is needed to scan QR codes for connection setup.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Local network access is needed to discover Zebra label printers on your Wi-Fi network.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_pdl-datastream._tcp</string>
+		<string>_printer._tcp</string>
+	</array>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>

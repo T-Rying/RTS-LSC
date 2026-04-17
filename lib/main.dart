@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/cupertino.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'models/environment_config.dart';
+import 'pages/label_printing_page.dart';
 import 'pages/mobile_inventory_page.dart';
 import 'pages/pos_page.dart';
 import 'pages/settings_page.dart';
@@ -145,26 +146,7 @@ class _HomePageState extends State<HomePage> {
               _ModuleButton(
                 icon: CupertinoIcons.cube_box,
                 label: 'Mobile Inventory',
-                onTap: () {
-                  if (_connection == null) {
-                    _showAlert('Configure a connection in Settings first');
-                    return;
-                  }
-                  if (_connection!.type != ConnectionType.saas) {
-                    _showAlert('Mobile Inventory currently supports SaaS connections only');
-                    return;
-                  }
-                  if (_connection!.storeNo.isEmpty) {
-                    _showAlert('Set Store No. in Settings → Mobile Inventory first');
-                    return;
-                  }
-                  Navigator.push(
-                    context,
-                    CupertinoPageRoute(
-                      builder: (_) => MobileInventoryPage(config: _connection!),
-                    ),
-                  );
-                },
+                onTap: _openMobileInventory,
               ),
               const SizedBox(height: 16),
               _ModuleButton(
@@ -179,6 +161,59 @@ class _HomePageState extends State<HomePage> {
         ),
       ),
     );
+  }
+
+  Future<void> _openMobileInventory() async {
+    if (_connection == null) {
+      _showAlert('Configure a connection in Settings first');
+      return;
+    }
+    final choice = await showCupertinoModalPopup<_InventoryChoice>(
+      context: context,
+      builder: (ctx) => CupertinoActionSheet(
+        title: const Text('Mobile Inventory'),
+        message: const Text('Pick a module.'),
+        actions: [
+          CupertinoActionSheetAction(
+            onPressed: () => Navigator.pop(ctx, _InventoryChoice.inventory),
+            child: const Text('Inventory'),
+          ),
+          CupertinoActionSheetAction(
+            onPressed: () => Navigator.pop(ctx, _InventoryChoice.labelPrinting),
+            child: const Text('Label Printing'),
+          ),
+        ],
+        cancelButton: CupertinoActionSheetAction(
+          isDefaultAction: true,
+          onPressed: () => Navigator.pop(ctx),
+          child: const Text('Cancel'),
+        ),
+      ),
+    );
+    if (choice == null || !mounted) return;
+
+    switch (choice) {
+      case _InventoryChoice.inventory:
+        if (_connection!.type != ConnectionType.saas) {
+          _showAlert('Mobile Inventory currently supports SaaS connections only');
+          return;
+        }
+        if (_connection!.storeNo.isEmpty) {
+          _showAlert('Set Store No. in Settings → Mobile Inventory first');
+          return;
+        }
+        Navigator.push(
+          context,
+          CupertinoPageRoute(
+            builder: (_) => MobileInventoryPage(config: _connection!),
+          ),
+        );
+      case _InventoryChoice.labelPrinting:
+        Navigator.push(
+          context,
+          CupertinoPageRoute(builder: (_) => const LabelPrintingPage()),
+        );
+    }
   }
 
   void _showAlert(String message) {
@@ -197,6 +232,8 @@ class _HomePageState extends State<HomePage> {
     );
   }
 }
+
+enum _InventoryChoice { inventory, labelPrinting }
 
 class _ModuleButton extends StatelessWidget {
   const _ModuleButton({
