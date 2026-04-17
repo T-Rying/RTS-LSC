@@ -160,7 +160,7 @@ class InventoryService {
       _log.debug(
         'InventoryService: $operation returned 0 rows — top-level keys: ${json.keys.toList()} · '
         'status="${page.status}" endOfTable=${page.endOfTable} · '
-        'payload snippet: ${payload.substring(0, payload.length.clamp(0, 500))}',
+        'payload snippet: ${payload.substring(0, payload.length.clamp(0, 3000))}',
       );
     }
     return page;
@@ -230,6 +230,44 @@ class InventoryService {
     return rows;
   }
 
+  /// Parses the `DynDataSet` payload shape used by newer BC replication ops
+  /// (e.g. `GetItemUnitOfMeasure`). Field metadata lives under `DataSetFields`
+  /// and records under `DataSetRecords` (each with a `Fields` array of
+  /// `{FieldIndex, FieldValue}`).
+  static List<Map<String, dynamic>> _parseDynDataSet(Map<String, dynamic>? dynDataSet) {
+    if (dynDataSet == null) return const [];
+    final fields = dynDataSet['DataSetFields'] as List? ?? const [];
+    final indexToName = <int, String>{};
+    for (final f in fields) {
+      if (f is! Map) continue;
+      final idx = (f['FieldIndex'] as num?)?.toInt();
+      final name = f['FieldName'] as String?;
+      if (idx != null && name != null) indexToName[idx] = name;
+    }
+
+    final records = (dynDataSet['DataSetRecords'] as List?)
+        ?? (dynDataSet['Records'] as List?)
+        ?? const [];
+    final rows = <Map<String, dynamic>>[];
+    for (final r in records) {
+      if (r is! Map) continue;
+      final row = <String, dynamic>{};
+      final recFields = (r['Fields'] as List?)
+          ?? (r['DataSetFields'] as List?)
+          ?? const [];
+      for (final field in recFields) {
+        if (field is! Map) continue;
+        final idx = (field['FieldIndex'] as num?)?.toInt();
+        if (idx == null) continue;
+        final name = indexToName[idx];
+        if (name == null) continue;
+        row[name] = field['FieldValue'];
+      }
+      if (row.isNotEmpty) rows.add(row);
+    }
+    return rows;
+  }
+
   static String? _extractReturnValue(String soapBody) {
     final match = RegExp(
       r'<(?:\w+:)?return_value[^>]*>([\s\S]*?)</(?:\w+:)?return_value>',
@@ -279,16 +317,31 @@ class _ReplicationPage {
 
   factory _ReplicationPage.fromJson(Map<String, dynamic> json) {
     final tableData = json['TableData'] as Map<String, dynamic>?;
-    final upd = tableData?['TableDataUpd'] as Map<String, dynamic>?;
-    final del = tableData?['TableDataDel'] as Map<String, dynamic>?;
+    final dataSet = json['DataSet'] as Map<String, dynamic>?;
+
+    List<Map<String, dynamic>> upserts = const [];
+    List<Map<String, dynamic>> deletes = const [];
+
+    if (tableData != null) {
+      final upd = tableData['TableDataUpd'] as Map<String, dynamic>?;
+      final del = tableData['TableDataDel'] as Map<String, dynamic>?;
+      upserts = InventoryService._parseRecRef(upd?['RecRefJson'] as Map<String, dynamic>?);
+      deletes = InventoryService._parseRecRef(del?['RecRefJson'] as Map<String, dynamic>?);
+    } else if (dataSet != null) {
+      final upd = dataSet['DataSetUpd'] as Map<String, dynamic>?;
+      final del = dataSet['DataSetDel'] as Map<String, dynamic>?;
+      upserts = InventoryService._parseDynDataSet(upd?['DynDataSet'] as Map<String, dynamic>?);
+      deletes = InventoryService._parseDynDataSet(del?['DynDataSet'] as Map<String, dynamic>?);
+    }
+
     return _ReplicationPage(
       status: json['Status'] as String? ?? '',
       errorText: json['ErrorText'] as String? ?? '',
       lastKey: json['LastKey'] as String? ?? '',
       lastEntryNo: (json['LastEntryNo'] as num?)?.toInt() ?? 0,
       endOfTable: json['EndOfTable'] as bool? ?? true,
-      upserts: InventoryService._parseRecRef(upd?['RecRefJson'] as Map<String, dynamic>?),
-      deletes: InventoryService._parseRecRef(del?['RecRefJson'] as Map<String, dynamic>?),
+      upserts: upserts,
+      deletes: deletes,
     );
   }
 }
