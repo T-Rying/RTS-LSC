@@ -135,11 +135,13 @@ class LabelPreview extends StatelessWidget {
   }
 
   Widget _textBox(String text, double widthPx, double heightPx, bool selected, {bool isField = false}) {
-    final fontSize = heightPx.clamp(8, 80).toDouble();
+    final innerWidth = (widthPx - 4).clamp(10, 2000);
+    final innerHeight = (heightPx - 2).clamp(6, 400);
+    final fontSize = _fitFontSize(text.isEmpty ? ' ' : text, innerWidth.toDouble(), innerHeight.toDouble());
     return Container(
       width: widthPx.clamp(10, 2000),
       height: heightPx.clamp(6, 400),
-      padding: const EdgeInsets.symmetric(horizontal: 2),
+      padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 1),
       decoration: BoxDecoration(
         color: isField ? const Color(0x1A003366) : null,
         border: Border.all(
@@ -155,16 +157,47 @@ class LabelPreview extends StatelessWidget {
             style: TextStyle(
               fontSize: fontSize,
               color: CupertinoColors.black,
-              height: 1.0,
+              height: _lineHeightFactor,
             ),
-            maxLines: 1,
             overflow: TextOverflow.clip,
-            softWrap: false,
+            softWrap: true,
           ),
         ),
       ),
     );
   }
+
+  /// Binary-searches for the largest font size where `text` wraps within
+  /// `maxWidth` and still fits inside `maxHeight`.
+  double _fitFontSize(String text, double maxWidth, double maxHeight) {
+    if (maxWidth <= 0 || maxHeight <= 0) return 6;
+    double lo = 5;
+    double hi = maxHeight.clamp(5, 200).toDouble();
+    // Expand hi a little so single short strings can get bigger than the box height
+    hi = (hi < 8) ? 8 : hi;
+    while (hi - lo > 0.5) {
+      final mid = (lo + hi) / 2;
+      if (_textFits(text, mid, maxWidth, maxHeight)) {
+        lo = mid;
+      } else {
+        hi = mid;
+      }
+    }
+    return lo;
+  }
+
+  bool _textFits(String text, double fontSize, double maxWidth, double maxHeight) {
+    final painter = TextPainter(
+      text: TextSpan(
+        text: text,
+        style: TextStyle(fontSize: fontSize, height: _lineHeightFactor),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout(maxWidth: maxWidth);
+    return painter.height <= maxHeight && painter.width <= maxWidth + 0.5;
+  }
+
+  static const double _lineHeightFactor = 1.15;
 
   Widget _barcodeBox(String value, double widthPx, double heightPx, bool selected) {
     return Container(
