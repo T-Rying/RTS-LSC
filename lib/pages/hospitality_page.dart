@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/cupertino.dart';
 
+import '../models/dining_area_layout.dart';
 import '../models/dining_table.dart';
 import '../models/environment_config.dart';
 import '../services/hospitality_service.dart';
@@ -9,12 +10,16 @@ import '../services/log_service.dart';
 
 const Color _primaryColor = Color(0xFF003366);
 
-/// Renders the BC dining-table layout on a phone screen. Users pick an
-/// area (e.g. `S0005-RESTAURANT`) and then a layout within that area
-/// (e.g. `WEEKDAY`); the canvas draws each table as a rectangle at its
-/// design-space coordinates, scaled to fit the screen. Pinch-to-zoom
-/// and pan are provided by `InteractiveViewer` so larger restaurants
-/// with many tables stay legible.
+/// Renders the BC dining-table layout on a phone screen. Three filters
+/// cascade: **Restaurant** (derived from the prefix of `Dining_Area_ID`
+/// before the first dash) → **Area** (the suffix after the dash) →
+/// **Layout** (e.g. `WEEKDAY` / `WEEKEND`). The canvas draws each
+/// table rectangle at its design-space coordinates, scaled to fit;
+/// `InteractiveViewer` handles pinch-zoom and pan.
+///
+/// Alongside the table positions from `DiningTableLayout`, the page
+/// also pulls `DiningAreaLayout` metadata (capacity, in-use counts,
+/// description) and shows a summary card above the canvas.
 class HospitalityPage extends StatefulWidget {
   final EnvironmentConfig config;
 
@@ -28,9 +33,10 @@ class _HospitalityPageState extends State<HospitalityPage> {
   final _service = HospitalityService();
   final _log = LogService.instance;
 
-  List<DiningTable> _tables = const [];
-  String? _selectedArea;
-  String? _selectedLayout;
+  HospitalityLayout? _layout;
+  String? _restaurant;
+  String? _area;
+  String? _layoutCode;
   bool _loading = true;
   String? _error;
   DiningTable? _tappedTable;
@@ -47,17 +53,11 @@ class _HospitalityPageState extends State<HospitalityPage> {
       _error = null;
     });
     try {
-      final tables = await _service.fetchTables(widget.config);
+      final layout = await _service.fetchLayout(widget.config);
       if (!mounted) return;
-      final areas = _areas(tables);
-      final firstArea = areas.isNotEmpty ? areas.first : null;
-      final layouts = firstArea == null ? <String>[] : _layouts(tables, firstArea);
-      setState(() {
-        _tables = tables;
-        _selectedArea = firstArea;
-        _selectedLayout = layouts.isNotEmpty ? layouts.first : null;
-        _loading = false;
-      });
+      _layout = layout;
+      _selectInitialFilters();
+      setState(() => _loading = false);
     } catch (e) {
       _log.error('Hospitality: fetch failed: $e');
       if (!mounted) return;
@@ -68,21 +68,76 @@ class _HospitalityPageState extends State<HospitalityPage> {
     }
   }
 
-  List<String> _areas(List<DiningTable> tables) =>
-      tables.map((t) => t.areaId).toSet().toList()..sort();
+  void _selectInitialFilters() {
+    final restaurants = _restaurants();
+    _restaurant = restaurants.isNotEmpty ? restaurants.first : null;
+    final areas = _areasForRestaurant(_restaurant);
+    _area = areas.isNotEmpty ? areas.first : null;
+    final layouts = _layoutsFor(_restaurant, _area);
+    _layoutCode = layouts.isNotEmpty ? layouts.first : null;
+    _tappedTable = null;
+  }
 
-  List<String> _layouts(List<DiningTable> tables, String area) => tables
-      .where((t) => t.areaId == area)
-      .map((t) => t.layoutCode)
-      .toSet()
-      .toList()
-    ..sort();
+  // --- derived filter lists (union of both endpoints so all layouts
+  //     are visible even if they don't yet have drawn tables) ---
+
+  Iterable<String> _allAreaIds() sync* {
+    final layout = _layout;
+    if (layout == null) return;
+    yield* layout.tables.map((t) => t.areaId);
+    yield* layout.areaLayouts.map((m) => m.areaId);
+  }
+
+  List<String> _restaurants() =>
+      _allAreaIds().map((id) => splitDiningAreaId(id).restaurant).toSet().toList()
+        ..sort();
+
+  List<String> _areasForRestaurant(String? restaurant) {
+    if (restaurant == null) return const [];
+    return _allAreaIds()
+        .where((id) => splitDiningAreaId(id).restaurant == restaurant)
+        .map((id) => splitDiningAreaId(id).area)
+        .toSet()
+        .toList()
+      ..sort();
+  }
+
+  List<String> _layoutsFor(String? restaurant, String? area) {
+    final layout = _layout;
+    if (layout == null || restaurant == null || area == null) return const [];
+    final areaId = _composeAreaId(restaurant, area);
+    final codes = <String>{};
+    for (final t in layout.tables) {
+      if (t.areaId == areaId) codes.add(t.layoutCode);
+    }
+    for (final m in layout.areaLayouts) {
+      if (m.areaId == areaId) codes.add(m.layoutCode);
+    }
+    return codes.toList()..sort();
+  }
+
+  String _composeAreaId(String restaurant, String area) =>
+      restaurant == area ? restaurant : '$restaurant-$area';
+
+  String? _selectedAreaId() {
+    if (_restaurant == null || _area == null) return null;
+    return _composeAreaId(_restaurant!, _area!);
+  }
 
   List<DiningTable> _currentTables() {
-    if (_selectedArea == null || _selectedLayout == null) return const [];
-    return _tables
-        .where((t) => t.areaId == _selectedArea && t.layoutCode == _selectedLayout)
+    final layout = _layout;
+    final areaId = _selectedAreaId();
+    if (layout == null || areaId == null || _layoutCode == null) return const [];
+    return layout.tables
+        .where((t) => t.areaId == areaId && t.layoutCode == _layoutCode)
         .toList();
+  }
+
+  DiningAreaLayout? _currentMeta() {
+    final layout = _layout;
+    final areaId = _selectedAreaId();
+    if (layout == null || areaId == null || _layoutCode == null) return null;
+    return layout.metaFor(areaId, _layoutCode!);
   }
 
   @override
@@ -110,7 +165,8 @@ class _HospitalityPageState extends State<HospitalityPage> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(CupertinoIcons.exclamationmark_triangle, size: 36, color: CupertinoColors.systemOrange),
+            const Icon(CupertinoIcons.exclamationmark_triangle,
+                size: 36, color: CupertinoColors.systemOrange),
             const SizedBox(height: 12),
             Text(_error!, textAlign: TextAlign.center),
             const SizedBox(height: 16),
@@ -119,27 +175,38 @@ class _HospitalityPageState extends State<HospitalityPage> {
         ),
       );
     }
-    if (_tables.isEmpty) {
-      return const Center(child: Text('No dining tables returned.'));
+    if (_layout == null || _layout!.tables.isEmpty && _layout!.areaLayouts.isEmpty) {
+      return const Center(child: Text('No dining data returned.'));
     }
 
     final tables = _currentTables();
+    final meta = _currentMeta();
     return Column(
       children: [
-        _Header(
-          areas: _areas(_tables),
-          layouts: _selectedArea == null ? const [] : _layouts(_tables, _selectedArea!),
-          area: _selectedArea,
-          layout: _selectedLayout,
+        _FiltersBar(
+          restaurants: _restaurants(),
+          areas: _areasForRestaurant(_restaurant),
+          layouts: _layoutsFor(_restaurant, _area),
+          restaurant: _restaurant,
+          area: _area,
+          layoutCode: _layoutCode,
+          onPickRestaurant: _pickRestaurant,
           onPickArea: _pickArea,
           onPickLayout: _pickLayout,
-          tableCount: tables.length,
         ),
+        if (meta != null) _MetaCard(meta: meta, tableCount: tables.length),
         Expanded(
           child: tables.isEmpty
               ? const Center(
-                  child: Text('No tables for this layout.',
-                      style: TextStyle(color: CupertinoColors.systemGrey)),
+                  child: Padding(
+                    padding: EdgeInsets.all(24),
+                    child: Text(
+                      'No drawn tables for this layout.\n'
+                      'The area metadata is still shown above.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: CupertinoColors.systemGrey),
+                    ),
+                  ),
                 )
               : _Canvas(
                   tables: tables,
@@ -152,46 +219,52 @@ class _HospitalityPageState extends State<HospitalityPage> {
     );
   }
 
-  Future<void> _pickArea() async {
-    final areas = _areas(_tables);
-    final picked = await showCupertinoModalPopup<String>(
-      context: context,
-      builder: (ctx) => CupertinoActionSheet(
-        title: const Text('Dining area'),
-        actions: [
-          for (final a in areas)
-            CupertinoActionSheetAction(
-              onPressed: () => Navigator.pop(ctx, a),
-              child: Text(a),
-            ),
-        ],
-        cancelButton: CupertinoActionSheetAction(
-          onPressed: () => Navigator.pop(ctx),
-          child: const Text('Cancel'),
-        ),
-      ),
-    );
+  Future<void> _pickRestaurant() async {
+    final restaurants = _restaurants();
+    final picked = await _pickFromSheet('Restaurant', restaurants);
     if (picked == null) return;
-    final layouts = _layouts(_tables, picked);
     setState(() {
-      _selectedArea = picked;
-      _selectedLayout = layouts.isNotEmpty ? layouts.first : null;
+      _restaurant = picked;
+      final areas = _areasForRestaurant(_restaurant);
+      _area = areas.isNotEmpty ? areas.first : null;
+      final layouts = _layoutsFor(_restaurant, _area);
+      _layoutCode = layouts.isNotEmpty ? layouts.first : null;
+      _tappedTable = null;
+    });
+  }
+
+  Future<void> _pickArea() async {
+    final areas = _areasForRestaurant(_restaurant);
+    final picked = await _pickFromSheet('Area', areas);
+    if (picked == null) return;
+    setState(() {
+      _area = picked;
+      final layouts = _layoutsFor(_restaurant, _area);
+      _layoutCode = layouts.isNotEmpty ? layouts.first : null;
       _tappedTable = null;
     });
   }
 
   Future<void> _pickLayout() async {
-    if (_selectedArea == null) return;
-    final layouts = _layouts(_tables, _selectedArea!);
-    final picked = await showCupertinoModalPopup<String>(
+    final layouts = _layoutsFor(_restaurant, _area);
+    final picked = await _pickFromSheet('Layout', layouts);
+    if (picked == null) return;
+    setState(() {
+      _layoutCode = picked;
+      _tappedTable = null;
+    });
+  }
+
+  Future<String?> _pickFromSheet(String title, List<String> options) {
+    return showCupertinoModalPopup<String>(
       context: context,
       builder: (ctx) => CupertinoActionSheet(
-        title: const Text('Layout'),
+        title: Text(title),
         actions: [
-          for (final l in layouts)
+          for (final o in options)
             CupertinoActionSheetAction(
-              onPressed: () => Navigator.pop(ctx, l),
-              child: Text(l),
+              onPressed: () => Navigator.pop(ctx, o),
+              child: Text(o),
             ),
         ],
         cancelButton: CupertinoActionSheetAction(
@@ -200,29 +273,28 @@ class _HospitalityPageState extends State<HospitalityPage> {
         ),
       ),
     );
-    if (picked == null) return;
-    setState(() {
-      _selectedLayout = picked;
-      _tappedTable = null;
-    });
   }
 }
 
-class _Header extends StatelessWidget {
+class _FiltersBar extends StatelessWidget {
+  final List<String> restaurants;
   final List<String> areas;
   final List<String> layouts;
+  final String? restaurant;
   final String? area;
-  final String? layout;
-  final int tableCount;
+  final String? layoutCode;
+  final VoidCallback onPickRestaurant;
   final VoidCallback onPickArea;
   final VoidCallback onPickLayout;
 
-  const _Header({
+  const _FiltersBar({
+    required this.restaurants,
     required this.areas,
     required this.layouts,
+    required this.restaurant,
     required this.area,
-    required this.layout,
-    required this.tableCount,
+    required this.layoutCode,
+    required this.onPickRestaurant,
     required this.onPickArea,
     required this.onPickLayout,
   });
@@ -230,7 +302,7 @@ class _Header extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
       decoration: const BoxDecoration(
         color: CupertinoColors.systemGroupedBackground,
         border: Border(bottom: BorderSide(color: CupertinoColors.systemGrey4)),
@@ -239,22 +311,27 @@ class _Header extends StatelessWidget {
         children: [
           Expanded(
             child: _PickerButton(
+              label: 'Restaurant',
+              value: restaurant ?? '—',
+              onTap: restaurants.isEmpty ? null : onPickRestaurant,
+            ),
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: _PickerButton(
               label: 'Area',
               value: area ?? '—',
               onTap: areas.isEmpty ? null : onPickArea,
             ),
           ),
-          const SizedBox(width: 10),
+          const SizedBox(width: 6),
           Expanded(
             child: _PickerButton(
               label: 'Layout',
-              value: layout ?? '—',
+              value: layoutCode ?? '—',
               onTap: layouts.isEmpty ? null : onPickLayout,
             ),
           ),
-          const SizedBox(width: 10),
-          Text('$tableCount tables',
-              style: const TextStyle(fontSize: 12, color: CupertinoColors.systemGrey)),
         ],
       ),
     );
@@ -275,7 +352,7 @@ class _PickerButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return CupertinoButton(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
       color: CupertinoColors.white,
       onPressed: onTap,
       child: Column(
@@ -292,16 +369,73 @@ class _PickerButton extends StatelessWidget {
                 child: Text(value,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
-                        fontSize: 14,
+                        fontSize: 13,
                         color: CupertinoColors.black,
                         fontWeight: FontWeight.w500)),
               ),
               const SizedBox(width: 4),
-              const Icon(CupertinoIcons.chevron_down, size: 12, color: CupertinoColors.systemGrey),
+              const Icon(CupertinoIcons.chevron_down,
+                  size: 11, color: CupertinoColors.systemGrey),
             ],
           ),
         ],
       ),
+    );
+  }
+}
+
+class _MetaCard extends StatelessWidget {
+  final DiningAreaLayout meta;
+  final int tableCount;
+
+  const _MetaCard({required this.meta, required this.tableCount});
+
+  @override
+  Widget build(BuildContext context) {
+    final description = meta.description.trim();
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: CupertinoColors.white,
+        border: Border.all(color: CupertinoColors.systemGrey5),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (description.isNotEmpty) ...[
+            Text(description,
+                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+            const SizedBox(height: 6),
+          ],
+          Wrap(
+            spacing: 12,
+            runSpacing: 4,
+            children: [
+              _stat('Capacity', '${meta.totalCapacity}'),
+              _stat('Tables', '${meta.inUseDiningTables}'),
+              _stat('Available', '${meta.availableDiningTables}'),
+              if (meta.combinedTables > 0) _stat('Combined', '${meta.combinedTables}'),
+              _stat('Drawn', '$tableCount'),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _stat(String label, String value) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text('$label:',
+            style: const TextStyle(fontSize: 12, color: CupertinoColors.systemGrey)),
+        const SizedBox(width: 4),
+        Text(value,
+            style: const TextStyle(
+                fontSize: 12, color: CupertinoColors.black, fontWeight: FontWeight.w600)),
+      ],
     );
   }
 }
@@ -321,7 +455,6 @@ class _Canvas extends StatelessWidget {
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        // Design-space bounds from the tables in this layout.
         final minX = tables.map((t) => t.x1).reduce(math.min);
         final maxX = tables.map((t) => t.x2).reduce(math.max);
         final minY = tables.map((t) => t.y1).reduce(math.min);
@@ -329,7 +462,6 @@ class _Canvas extends StatelessWidget {
         final spanX = math.max(1, maxX - minX);
         final spanY = math.max(1, maxY - minY);
 
-        // Pad a bit so tables don't touch the canvas edge.
         const pad = 16.0;
         final availW = constraints.maxWidth - pad * 2;
         final availH = constraints.maxHeight - pad * 2;
@@ -439,7 +571,8 @@ class _TableDetails extends StatelessWidget {
             ),
             alignment: Alignment.center,
             child: Text('${table.tableNo}',
-                style: const TextStyle(color: CupertinoColors.white, fontWeight: FontWeight.w700)),
+                style: const TextStyle(
+                    color: CupertinoColors.white, fontWeight: FontWeight.w700)),
           ),
           const SizedBox(width: 12),
           Expanded(
