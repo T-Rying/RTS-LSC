@@ -65,6 +65,13 @@ final _entities = <_Entity>[
     fetch: (svc, cfg) => svc.getItemUnitOfMeasures(cfg),
     summarize: _summarizeItemUnitOfMeasure,
   ),
+  _Entity(
+    key: 'stores',
+    displayName: 'Stores',
+    icon: CupertinoIcons.building_2_fill,
+    fetch: (svc, cfg) => svc.getStores(cfg),
+    summarize: _summarizeStore,
+  ),
 ];
 
 (String, String) _summarizeBarcode(Map<String, dynamic> row) {
@@ -115,6 +122,20 @@ final _entities = <_Entity>[
     parts.add(salesCode != null ? '$salesType: $salesCode' : salesType);
   }
   return (title.isEmpty ? '(no price)' : title, parts.join(' · '));
+}
+
+(String, String) _summarizeStore(Map<String, dynamic> row) {
+  final no = _pick(row, const ['No.']) ?? '(no code)';
+  final name = _pick(row, const ['Name']);
+  final city = _pick(row, const ['City']);
+  final country = _pick(row, const ['Country Code']);
+  final parts = <String>[];
+  if (name != null) parts.add(name);
+  final loc = <String>[];
+  if (city != null) loc.add(city);
+  if (country != null) loc.add(country);
+  if (loc.isNotEmpty) parts.add(loc.join(', '));
+  return (no, parts.join(' · '));
 }
 
 (String, String) _summarizeItemUnitOfMeasure(Map<String, dynamic> row) {
