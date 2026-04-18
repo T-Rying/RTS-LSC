@@ -26,15 +26,43 @@ class HospitalityLayout {
     required this.tables,
   });
 
-  /// Unique restaurant codes present in the HospitalityTypes list.
-  List<String> restaurants() =>
-      (types.map((t) => t.restaurantNo).toSet().toList()..sort());
+  /// Only the types this page can actually draw — `Graphical Dining
+  /// Tables` and `Dining Table Grid`. Everything else (KOT List,
+  /// Order List, Delivery, Drive-thru, Self Service) is hidden on the
+  /// mobile view because there is no floor plan to show.
+  List<HospitalityType> get graphicalTypes =>
+      types.where((t) => t.hasGraphicalLayout).toList();
 
-  /// Hospitality types for a given restaurant, ordered by their
-  /// configured Sequence (the same order LS Central shows them in).
+  /// Unique restaurant codes that have at least one graphical type.
+  List<String> restaurants() =>
+      (graphicalTypes.map((t) => t.restaurantNo).toSet().toList()..sort());
+
+  /// Graphical hospitality types for a given restaurant, ordered by
+  /// their configured Sequence (the same order LS Central shows them).
   List<HospitalityType> typesFor(String restaurantNo) =>
-      types.where((t) => t.restaurantNo == restaurantNo).toList()
+      graphicalTypes.where((t) => t.restaurantNo == restaurantNo).toList()
         ..sort((a, b) => a.sequence.compareTo(b.sequence));
+
+  /// A human-readable label for a restaurant, combining its code with
+  /// a description derived from its hospitality types. We pick the
+  /// `RESTAURANT` sales type's description when available (that row is
+  /// almost always the main dining description — e.g. "Restaurant
+  /// Downstairs", "Upstairs Coffee House"), otherwise we fall back to
+  /// the first graphical type's description. If neither has a
+  /// description set we just return the bare code.
+  String restaurantLabel(String restaurantNo) {
+    final typesHere = typesFor(restaurantNo);
+    if (typesHere.isEmpty) return restaurantNo;
+    final main = typesHere.firstWhere(
+      (t) => t.salesType == 'RESTAURANT' && t.description.isNotEmpty,
+      orElse: () => typesHere.firstWhere(
+        (t) => t.description.isNotEmpty,
+        orElse: () => typesHere.first,
+      ),
+    );
+    if (main.description.isEmpty) return restaurantNo;
+    return '$restaurantNo · ${main.description}';
+  }
 
   DiningAreaLayout? metaFor(String areaId, String layoutCode) {
     if (areaId.isEmpty || layoutCode.isEmpty) return null;

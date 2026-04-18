@@ -45,6 +45,19 @@ class HospitalityType {
   bool get hasDiningArea =>
       diningAreaId.isNotEmpty && currentLayoutCode.isNotEmpty;
 
+  /// The two `Layout_View` values LS Central uses to draw an actual
+  /// floor plan on the POS: a free-form graphical view (tables placed
+  /// by x/y coordinates and shape) and a row-column grid view (tables
+  /// placed by row/col cell). Other layout views (KOT List, Order
+  /// List, Delivery) don't have a drawable plan on this page.
+  static const _graphicalViews = {
+    'Graphical Dining Tables',
+    'Dining Table Grid',
+  };
+
+  bool get hasGraphicalLayout =>
+      hasDiningArea && _graphicalViews.contains(layoutView);
+
   String get displayLabel =>
       description.isNotEmpty ? '$salesType · $description' : salesType;
 
