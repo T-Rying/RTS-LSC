@@ -44,13 +44,24 @@ class HospitalityLayout {
         ..sort((a, b) => a.sequence.compareTo(b.sequence));
 
   /// A human-readable label for a restaurant, combining its code with
-  /// a description derived from its hospitality types. We pick the
-  /// `RESTAURANT` sales type's description when available (that row is
-  /// almost always the main dining description — e.g. "Restaurant
-  /// Downstairs", "Upstairs Coffee House"), otherwise we fall back to
-  /// the first graphical type's description. If neither has a
-  /// description set we just return the bare code.
-  String restaurantLabel(String restaurantNo) {
+  /// a name.
+  ///
+  /// When [storeNames] contains an entry for [restaurantNo] (populated
+  /// from the replicated Store table — `GetStoreBuffer`), we use the
+  /// real store name ("Cronus Restaurant", "Cronus Café", …). That's
+  /// the preferred source because it's the name LS Central itself
+  /// shows.
+  ///
+  /// If no store name is available (e.g. the user hasn't replicated
+  /// Stores yet), we derive a description from the hospitality types
+  /// instead: the `RESTAURANT` sales-type's description when present,
+  /// otherwise the first graphical type's description. If neither has
+  /// a description set we just return the bare code.
+  String restaurantLabel(String restaurantNo, {Map<String, String>? storeNames}) {
+    final storeName = storeNames?[restaurantNo];
+    if (storeName != null && storeName.isNotEmpty) {
+      return '$restaurantNo · $storeName';
+    }
     final typesHere = typesFor(restaurantNo);
     if (typesHere.isEmpty) return restaurantNo;
     final main = typesHere.firstWhere(

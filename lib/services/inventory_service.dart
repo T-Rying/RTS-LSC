@@ -66,6 +66,13 @@ class InventoryService {
     );
   }
 
+  /// Replicates the BC Store table (`GetStoreBuffer`). Unlike the per-
+  /// store inventory calls, there is no `storeNo` body field — the
+  /// codeunit returns every store the connected tenant can see.
+  Future<List<Map<String, dynamic>>> getStores(EnvironmentConfig config) {
+    return _replicate(config, operation: 'GetStoreBuffer');
+  }
+
   Future<List<Map<String, dynamic>>> _replicate(
     EnvironmentConfig config, {
     required String operation,

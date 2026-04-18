@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/cupertino.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/dining_area_layout.dart';
 import '../models/dining_table.dart';
@@ -8,6 +9,7 @@ import '../models/environment_config.dart';
 import '../models/hospitality_type.dart';
 import '../services/hospitality_service.dart';
 import '../services/log_service.dart';
+import '../services/replication_store.dart';
 
 const Color _primaryColor = Color(0xFF003366);
 
@@ -52,6 +54,12 @@ class _HospitalityPageState extends State<HospitalityPage> {
   String? _error;
   DiningTable? _tappedTable;
 
+  /// Restaurant_No → real store name, sourced from the locally
+  /// replicated Store buffer (`ReplicationStore(prefs, 'stores')`).
+  /// Empty until the user replicates Stores in Mobile Inventory; when
+  /// empty we fall back to deriving names from hospitality types.
+  Map<String, String> _storeNames = const {};
+
   @override
   void initState() {
     super.initState();
@@ -64,9 +72,12 @@ class _HospitalityPageState extends State<HospitalityPage> {
       _error = null;
     });
     try {
+      final prefs = await SharedPreferences.getInstance();
+      final storeNames = _readStoreNames(prefs);
       final layout = await _service.fetchLayout(widget.config);
       if (!mounted) return;
       _layout = layout;
+      _storeNames = storeNames;
       _selectInitialFilters();
       setState(() => _loading = false);
     } catch (e) {
@@ -77,6 +88,22 @@ class _HospitalityPageState extends State<HospitalityPage> {
         _loading = false;
       });
     }
+  }
+
+  /// Reads the replicated Store table (if any) and builds a lookup of
+  /// `No.` → `Name`. Empty rows are skipped so missing-name entries
+  /// fall through to the hospitality-type-derived fallback.
+  static Map<String, String> _readStoreNames(SharedPreferences prefs) {
+    final rows = ReplicationStore(prefs, 'stores').load();
+    final names = <String, String>{};
+    for (final row in rows) {
+      final no = row['No.']?.toString().trim();
+      final name = row['Name']?.toString().trim();
+      if (no != null && no.isNotEmpty && name != null && name.isNotEmpty) {
+        names[no] = name;
+      }
+    }
+    return names;
   }
 
   void _selectInitialFilters() {
@@ -143,7 +170,9 @@ class _HospitalityPageState extends State<HospitalityPage> {
           restaurants: layout.restaurants(),
           types: _restaurant == null ? const [] : layout.typesFor(_restaurant!),
           restaurant: _restaurant,
-          restaurantLabel: _restaurant == null ? null : layout.restaurantLabel(_restaurant!),
+          restaurantLabel: _restaurant == null
+              ? null
+              : layout.restaurantLabel(_restaurant!, storeNames: _storeNames),
           type: type,
           onPickRestaurant: _pickRestaurant,
           onPickType: _pickType,
@@ -222,7 +251,7 @@ class _HospitalityPageState extends State<HospitalityPage> {
           for (final code in restaurants)
             CupertinoActionSheetAction(
               onPressed: () => Navigator.pop(ctx, code),
-              child: Text(layout.restaurantLabel(code)),
+              child: Text(layout.restaurantLabel(code, storeNames: _storeNames)),
             ),
         ],
         cancelButton: CupertinoActionSheetAction(
