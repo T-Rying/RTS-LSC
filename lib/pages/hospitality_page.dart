@@ -5,21 +5,33 @@ import 'package:flutter/cupertino.dart';
 import '../models/dining_area_layout.dart';
 import '../models/dining_table.dart';
 import '../models/environment_config.dart';
+import '../models/hospitality_type.dart';
 import '../services/hospitality_service.dart';
 import '../services/log_service.dart';
 
 const Color _primaryColor = Color(0xFF003366);
 
-/// Renders the BC dining-table layout on a phone screen. Three filters
-/// cascade: **Restaurant** (derived from the prefix of `Dining_Area_ID`
-/// before the first dash) → **Area** (the suffix after the dash) →
-/// **Layout** (e.g. `WEEKDAY` / `WEEKEND`). The canvas draws each
-/// table rectangle at its design-space coordinates, scaled to fit;
-/// `InteractiveViewer` handles pinch-zoom and pan.
+/// Hospitality view — driven by the `HospitalityTypes` OData entity.
 ///
-/// Alongside the table positions from `DiningTableLayout`, the page
-/// also pulls `DiningAreaLayout` metadata (capacity, in-use counts,
-/// description) and shows a summary card above the canvas.
+/// Navigation is a two-step cascade:
+///   1. **Restaurant** (e.g. `S0005`, `S0008`, `T0100`) — unique
+///      `Restaurant_No` values from the hospitality types list.
+///   2. **Hospitality type** (e.g. `RESTAURANT · Restaurant Downstairs`)
+///      — the types defined for that restaurant, ordered by their
+///      configured Sequence.
+///
+/// Once a type is chosen the page shows:
+///   - A configuration card (service type, service flow, order id,
+///     layout view, queue counter, max guests).
+///   - If the type has a `Dining_Area_ID` + `Current_Din_Area_Layout_Code`
+///     — the matching `DiningAreaLayout` metadata (description, capacity,
+///     in-use / available / combined counts) and the graphical canvas
+///     drawn from `DiningTableLayout`.
+///   - If it doesn't (counter / drive-thru / delivery) — a note
+///     explaining why there is no floor plan for this type.
+///
+/// `InteractiveViewer` handles pinch-zoom and pan on the canvas so
+/// larger restaurants stay legible on a phone screen.
 class HospitalityPage extends StatefulWidget {
   final EnvironmentConfig config;
 
@@ -35,8 +47,7 @@ class _HospitalityPageState extends State<HospitalityPage> {
 
   HospitalityLayout? _layout;
   String? _restaurant;
-  String? _area;
-  String? _layoutCode;
+  HospitalityType? _type;
   bool _loading = true;
   String? _error;
   DiningTable? _tappedTable;
@@ -69,75 +80,13 @@ class _HospitalityPageState extends State<HospitalityPage> {
   }
 
   void _selectInitialFilters() {
-    final restaurants = _restaurants();
-    _restaurant = restaurants.isNotEmpty ? restaurants.first : null;
-    final areas = _areasForRestaurant(_restaurant);
-    _area = areas.isNotEmpty ? areas.first : null;
-    final layouts = _layoutsFor(_restaurant, _area);
-    _layoutCode = layouts.isNotEmpty ? layouts.first : null;
-    _tappedTable = null;
-  }
-
-  // --- derived filter lists (union of both endpoints so all layouts
-  //     are visible even if they don't yet have drawn tables) ---
-
-  Iterable<String> _allAreaIds() sync* {
     final layout = _layout;
     if (layout == null) return;
-    yield* layout.tables.map((t) => t.areaId);
-    yield* layout.areaLayouts.map((m) => m.areaId);
-  }
-
-  List<String> _restaurants() =>
-      _allAreaIds().map((id) => splitDiningAreaId(id).restaurant).toSet().toList()
-        ..sort();
-
-  List<String> _areasForRestaurant(String? restaurant) {
-    if (restaurant == null) return const [];
-    return _allAreaIds()
-        .where((id) => splitDiningAreaId(id).restaurant == restaurant)
-        .map((id) => splitDiningAreaId(id).area)
-        .toSet()
-        .toList()
-      ..sort();
-  }
-
-  List<String> _layoutsFor(String? restaurant, String? area) {
-    final layout = _layout;
-    if (layout == null || restaurant == null || area == null) return const [];
-    final areaId = _composeAreaId(restaurant, area);
-    final codes = <String>{};
-    for (final t in layout.tables) {
-      if (t.areaId == areaId) codes.add(t.layoutCode);
-    }
-    for (final m in layout.areaLayouts) {
-      if (m.areaId == areaId) codes.add(m.layoutCode);
-    }
-    return codes.toList()..sort();
-  }
-
-  String _composeAreaId(String restaurant, String area) =>
-      restaurant == area ? restaurant : '$restaurant-$area';
-
-  String? _selectedAreaId() {
-    if (_restaurant == null || _area == null) return null;
-    return _composeAreaId(_restaurant!, _area!);
-  }
-
-  List<DiningTable> _currentTables() {
-    final layout = _layout;
-    final areaId = _selectedAreaId();
-    if (layout == null || areaId == null || _layoutCode == null) return const [];
-    return layout.tables
-        .where((t) => t.areaId == areaId && t.layoutCode == _layoutCode)
-        .toList();
-  }
-
-  DiningAreaLayout? _currentMeta() {
-    final layout = _layout;
-    final areaId = _selectedAreaId();
-    if (layout == null || areaId == null || _layoutCode == null) return null;
-    return layout.metaFor(areaId, _layoutCode!);
+    final restaurants = layout.restaurants();
+    _restaurant = restaurants.isNotEmpty ? restaurants.first : null;
+    final types = _restaurant == null ? <HospitalityType>[] : layout.typesFor(_restaurant!);
+    _type = types.isNotEmpty ? types.first : null;
+    _tappedTable = null;
   }
 
   @override
@@ -175,87 +124,134 @@ class _HospitalityPageState extends State<HospitalityPage> {
         ),
       );
     }
-    if (_layout == null || _layout!.tables.isEmpty && _layout!.areaLayouts.isEmpty) {
-      return const Center(child: Text('No dining data returned.'));
+    final layout = _layout;
+    if (layout == null || layout.types.isEmpty) {
+      return const Center(child: Text('No hospitality types returned.'));
     }
 
-    final tables = _currentTables();
-    final meta = _currentMeta();
+    final type = _type;
+    final tables = (type == null || !type.hasDiningArea)
+        ? const <DiningTable>[]
+        : layout.tablesFor(type.diningAreaId, type.currentLayoutCode);
+    final meta = (type == null || !type.hasDiningArea)
+        ? null
+        : layout.metaFor(type.diningAreaId, type.currentLayoutCode);
+
     return Column(
       children: [
         _FiltersBar(
-          restaurants: _restaurants(),
-          areas: _areasForRestaurant(_restaurant),
-          layouts: _layoutsFor(_restaurant, _area),
+          restaurants: layout.restaurants(),
+          types: _restaurant == null ? const [] : layout.typesFor(_restaurant!),
           restaurant: _restaurant,
-          area: _area,
-          layoutCode: _layoutCode,
+          type: type,
           onPickRestaurant: _pickRestaurant,
-          onPickArea: _pickArea,
-          onPickLayout: _pickLayout,
+          onPickType: _pickType,
         ),
-        if (meta != null) _MetaCard(meta: meta, tableCount: tables.length),
+        if (type != null) _TypeCard(type: type),
+        if (type != null && type.hasDiningArea && meta != null)
+          _MetaCard(meta: meta, tableCount: tables.length),
         Expanded(
-          child: tables.isEmpty
-              ? const Center(
-                  child: Padding(
-                    padding: EdgeInsets.all(24),
-                    child: Text(
-                      'No drawn tables for this layout.\n'
-                      'The area metadata is still shown above.',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: CupertinoColors.systemGrey),
-                    ),
-                  ),
-                )
-              : _Canvas(
-                  tables: tables,
-                  selectedTable: _tappedTable,
-                  onTapTable: (t) => setState(() => _tappedTable = t),
-                ),
+          child: _canvasArea(type, tables),
         ),
         if (_tappedTable != null) _TableDetails(table: _tappedTable!),
       ],
     );
   }
 
+  Widget _canvasArea(HospitalityType? type, List<DiningTable> tables) {
+    if (type == null) {
+      return const SizedBox.shrink();
+    }
+    if (!type.hasDiningArea) {
+      return Padding(
+        padding: const EdgeInsets.all(24),
+        child: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(CupertinoIcons.square_stack, size: 36, color: CupertinoColors.systemGrey3),
+              const SizedBox(height: 10),
+              Text(
+                'No graphical floor plan for this type.',
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: CupertinoColors.systemGrey),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                type.serviceType.isEmpty
+                    ? 'This hospitality type uses an order-list-style view.'
+                    : '${type.serviceType} · ${type.layoutView}',
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 12, color: CupertinoColors.systemGrey),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    if (tables.isEmpty) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(24),
+          child: Text(
+            'No drawn tables for the current layout.\n'
+            'Area metadata is shown above.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: CupertinoColors.systemGrey),
+          ),
+        ),
+      );
+    }
+    return _Canvas(
+      tables: tables,
+      selectedTable: _tappedTable,
+      onTapTable: (t) => setState(() => _tappedTable = t),
+    );
+  }
+
   Future<void> _pickRestaurant() async {
-    final restaurants = _restaurants();
-    final picked = await _pickFromSheet('Restaurant', restaurants);
+    final layout = _layout;
+    if (layout == null) return;
+    final restaurants = layout.restaurants();
+    final picked = await _pickString('Restaurant', restaurants);
     if (picked == null) return;
+    final types = layout.typesFor(picked);
     setState(() {
       _restaurant = picked;
-      final areas = _areasForRestaurant(_restaurant);
-      _area = areas.isNotEmpty ? areas.first : null;
-      final layouts = _layoutsFor(_restaurant, _area);
-      _layoutCode = layouts.isNotEmpty ? layouts.first : null;
+      _type = types.isNotEmpty ? types.first : null;
       _tappedTable = null;
     });
   }
 
-  Future<void> _pickArea() async {
-    final areas = _areasForRestaurant(_restaurant);
-    final picked = await _pickFromSheet('Area', areas);
+  Future<void> _pickType() async {
+    final layout = _layout;
+    if (layout == null || _restaurant == null) return;
+    final types = layout.typesFor(_restaurant!);
+    final picked = await showCupertinoModalPopup<HospitalityType>(
+      context: context,
+      builder: (ctx) => CupertinoActionSheet(
+        title: const Text('Hospitality type'),
+        actions: [
+          for (final t in types)
+            CupertinoActionSheetAction(
+              onPressed: () => Navigator.pop(ctx, t),
+              child: Text(t.displayLabel),
+            ),
+        ],
+        cancelButton: CupertinoActionSheetAction(
+          onPressed: () => Navigator.pop(ctx),
+          child: const Text('Cancel'),
+        ),
+      ),
+    );
     if (picked == null) return;
     setState(() {
-      _area = picked;
-      final layouts = _layoutsFor(_restaurant, _area);
-      _layoutCode = layouts.isNotEmpty ? layouts.first : null;
+      _type = picked;
       _tappedTable = null;
     });
   }
 
-  Future<void> _pickLayout() async {
-    final layouts = _layoutsFor(_restaurant, _area);
-    final picked = await _pickFromSheet('Layout', layouts);
-    if (picked == null) return;
-    setState(() {
-      _layoutCode = picked;
-      _tappedTable = null;
-    });
-  }
-
-  Future<String?> _pickFromSheet(String title, List<String> options) {
+  Future<String?> _pickString(String title, List<String> options) {
     return showCupertinoModalPopup<String>(
       context: context,
       builder: (ctx) => CupertinoActionSheet(
@@ -278,25 +274,19 @@ class _HospitalityPageState extends State<HospitalityPage> {
 
 class _FiltersBar extends StatelessWidget {
   final List<String> restaurants;
-  final List<String> areas;
-  final List<String> layouts;
+  final List<HospitalityType> types;
   final String? restaurant;
-  final String? area;
-  final String? layoutCode;
+  final HospitalityType? type;
   final VoidCallback onPickRestaurant;
-  final VoidCallback onPickArea;
-  final VoidCallback onPickLayout;
+  final VoidCallback onPickType;
 
   const _FiltersBar({
     required this.restaurants,
-    required this.areas,
-    required this.layouts,
+    required this.types,
     required this.restaurant,
-    required this.area,
-    required this.layoutCode,
+    required this.type,
     required this.onPickRestaurant,
-    required this.onPickArea,
-    required this.onPickLayout,
+    required this.onPickType,
   });
 
   @override
@@ -310,6 +300,7 @@ class _FiltersBar extends StatelessWidget {
       child: Row(
         children: [
           Expanded(
+            flex: 2,
             child: _PickerButton(
               label: 'Restaurant',
               value: restaurant ?? '—',
@@ -318,18 +309,11 @@ class _FiltersBar extends StatelessWidget {
           ),
           const SizedBox(width: 6),
           Expanded(
+            flex: 3,
             child: _PickerButton(
-              label: 'Area',
-              value: area ?? '—',
-              onTap: areas.isEmpty ? null : onPickArea,
-            ),
-          ),
-          const SizedBox(width: 6),
-          Expanded(
-            child: _PickerButton(
-              label: 'Layout',
-              value: layoutCode ?? '—',
-              onTap: layouts.isEmpty ? null : onPickLayout,
+              label: 'Hospitality type',
+              value: type == null ? '—' : type!.displayLabel,
+              onTap: types.isEmpty ? null : onPickType,
             ),
           ),
         ],
@@ -384,6 +368,88 @@ class _PickerButton extends StatelessWidget {
   }
 }
 
+class _TypeCard extends StatelessWidget {
+  final HospitalityType type;
+
+  const _TypeCard({required this.type});
+
+  @override
+  Widget build(BuildContext context) {
+    final rows = <MapEntry<String, String>>[
+      MapEntry('Service', type.serviceType),
+      if (type.serviceFlowId.isNotEmpty)
+        MapEntry('Service flow', type.serviceFlowId),
+      if (type.orderId.isNotEmpty) MapEntry('Order id', type.orderId),
+      if (type.layoutView.isNotEmpty) MapEntry('Layout view', type.layoutView),
+      if (type.queueCounterCode.isNotEmpty)
+        MapEntry('Queue counter', type.queueCounterCode),
+      if (type.maxGuestsPerOrder > 0)
+        MapEntry('Max guests', '${type.maxGuestsPerOrder}'),
+      if (type.accessToOtherRestaurant.isNotEmpty)
+        MapEntry('Cross-restaurant', type.accessToOtherRestaurant),
+    ];
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 10, 12, 0),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: CupertinoColors.white,
+        border: Border.all(color: CupertinoColors.systemGrey5),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  type.description.isEmpty ? type.salesType : type.description,
+                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: _primaryColor.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(type.salesType,
+                    style: const TextStyle(
+                        fontSize: 11,
+                        color: _primaryColor,
+                        fontWeight: FontWeight.w700)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Wrap(
+            spacing: 12,
+            runSpacing: 4,
+            children: [
+              for (final e in rows) _stat(e.key, e.value),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _stat(String label, String value) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text('$label:',
+            style: const TextStyle(fontSize: 12, color: CupertinoColors.systemGrey)),
+        const SizedBox(width: 4),
+        Text(value,
+            style: const TextStyle(
+                fontSize: 12, color: CupertinoColors.black, fontWeight: FontWeight.w600)),
+      ],
+    );
+  }
+}
+
 class _MetaCard extends StatelessWidget {
   final DiningAreaLayout meta;
   final int tableCount;
@@ -404,11 +470,23 @@ class _MetaCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (description.isNotEmpty) ...[
-            Text(description,
-                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
-            const SizedBox(height: 6),
-          ],
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  description.isEmpty
+                      ? '${meta.areaId} · ${meta.layoutCode}'
+                      : description,
+                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                ),
+              ),
+              Text(
+                '${meta.areaId} · ${meta.layoutCode}',
+                style: const TextStyle(fontSize: 11, color: CupertinoColors.systemGrey),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
           Wrap(
             spacing: 12,
             runSpacing: 4,

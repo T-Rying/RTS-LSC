@@ -5,30 +5,55 @@ import 'package:http/http.dart' as http;
 import '../models/dining_area_layout.dart';
 import '../models/dining_table.dart';
 import '../models/environment_config.dart';
+import '../models/hospitality_type.dart';
 import 'auth_service.dart';
 import 'log_service.dart';
 
-/// Bundled result of fetching both `DiningTableLayout` (per-table
-/// positions) and `DiningAreaLayout` (per-area metadata). Both queries
-/// are done in parallel so the Hospitality page only waits for the
-/// slower of the two.
+/// Bundled result of fetching the three Hospitality OData entities:
+/// * `HospitalityTypes` — Restaurant_No × Sales_Type configuration rows
+/// * `DiningAreaLayout` — per-area metadata (capacity, counts, grid size)
+/// * `DiningTableLayout` — per-table design-space rectangles
+///
+/// All three are requested in parallel with the same OAuth bearer token.
 class HospitalityLayout {
-  final List<DiningTable> tables;
+  final List<HospitalityType> types;
   final List<DiningAreaLayout> areaLayouts;
+  final List<DiningTable> tables;
 
-  const HospitalityLayout({required this.tables, required this.areaLayouts});
+  const HospitalityLayout({
+    required this.types,
+    required this.areaLayouts,
+    required this.tables,
+  });
 
-  /// Looks up the DiningAreaLayout row for a given area + layout pair,
-  /// or null if no such row exists.
+  /// Unique restaurant codes present in the HospitalityTypes list.
+  List<String> restaurants() =>
+      (types.map((t) => t.restaurantNo).toSet().toList()..sort());
+
+  /// Hospitality types for a given restaurant, ordered by their
+  /// configured Sequence (the same order LS Central shows them in).
+  List<HospitalityType> typesFor(String restaurantNo) =>
+      types.where((t) => t.restaurantNo == restaurantNo).toList()
+        ..sort((a, b) => a.sequence.compareTo(b.sequence));
+
   DiningAreaLayout? metaFor(String areaId, String layoutCode) {
+    if (areaId.isEmpty || layoutCode.isEmpty) return null;
     for (final meta in areaLayouts) {
       if (meta.areaId == areaId && meta.layoutCode == layoutCode) return meta;
     }
     return null;
   }
+
+  List<DiningTable> tablesFor(String areaId, String layoutCode) {
+    if (areaId.isEmpty || layoutCode.isEmpty) return const [];
+    return tables
+        .where((t) => t.areaId == areaId && t.layoutCode == layoutCode)
+        .toList();
+  }
 }
 
-/// OData client for the BC Hospitality layout endpoints.
+/// OData client for the BC Hospitality endpoints used by the mobile
+/// Hospitality page.
 class HospitalityService {
   static const _bcSaasBaseUrl = 'https://api.businesscentral.dynamics.com/v2.0';
 
@@ -37,34 +62,35 @@ class HospitalityService {
 
   HospitalityService({AuthService? auth}) : _auth = auth ?? AuthService.instance;
 
-  /// Fetches table positions and area-layout metadata in parallel.
   Future<HospitalityLayout> fetchLayout(EnvironmentConfig config) async {
     if (config.type != ConnectionType.saas) {
       throw StateError('Hospitality currently supports SaaS connections only');
     }
     final token = await _auth.getAccessToken(config);
     final results = await Future.wait([
-      _fetchTables(config, token),
+      _fetchTypes(config, token),
       _fetchAreaLayouts(config, token),
+      _fetchTables(config, token),
     ]);
     return HospitalityLayout(
-      tables: results[0] as List<DiningTable>,
+      types: results[0] as List<HospitalityType>,
       areaLayouts: results[1] as List<DiningAreaLayout>,
+      tables: results[2] as List<DiningTable>,
     );
   }
 
-  Future<List<DiningTable>> _fetchTables(EnvironmentConfig config, String token) async {
+  Future<List<HospitalityType>> _fetchTypes(EnvironmentConfig config, String token) async {
     final list = await _fetchOData(
       token: token,
-      url: _endpoint(config, 'DiningTableLayout'),
-      label: 'DiningTableLayout',
+      url: _endpoint(config, 'HospitalityTypes'),
+      label: 'HospitalityTypes',
     );
-    final tables = list
+    final types = list
         .whereType<Map<String, dynamic>>()
-        .map(DiningTable.fromJson)
+        .map(HospitalityType.fromJson)
         .toList();
-    _log.info('HospitalityService: fetched ${tables.length} dining tables');
-    return tables;
+    _log.info('HospitalityService: fetched ${types.length} hospitality types');
+    return types;
   }
 
   Future<List<DiningAreaLayout>> _fetchAreaLayouts(EnvironmentConfig config, String token) async {
@@ -79,6 +105,20 @@ class HospitalityService {
         .toList();
     _log.info('HospitalityService: fetched ${layouts.length} dining-area layouts');
     return layouts;
+  }
+
+  Future<List<DiningTable>> _fetchTables(EnvironmentConfig config, String token) async {
+    final list = await _fetchOData(
+      token: token,
+      url: _endpoint(config, 'DiningTableLayout'),
+      label: 'DiningTableLayout',
+    );
+    final tables = list
+        .whereType<Map<String, dynamic>>()
+        .map(DiningTable.fromJson)
+        .toList();
+    _log.info('HospitalityService: fetched ${tables.length} dining tables');
+    return tables;
   }
 
   Future<List<dynamic>> _fetchOData({
