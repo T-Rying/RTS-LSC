@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/cupertino.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'models/environment_config.dart';
+import 'pages/hospitality_page.dart';
 import 'pages/label_printing_page.dart';
 import 'pages/mobile_inventory_page.dart';
 import 'pages/pos_page.dart';
@@ -152,9 +153,7 @@ class _HomePageState extends State<HomePage> {
               _ModuleButton(
                 icon: CupertinoIcons.chart_bar_alt_fill,
                 label: 'Hospitality',
-                onTap: () {
-                  // TODO: Navigate to Hospitality module
-                },
+                onTap: _openHospitality,
               ),
             ],
           ),
@@ -214,6 +213,27 @@ class _HomePageState extends State<HomePage> {
           CupertinoPageRoute(builder: (_) => const LabelPrintingPage()),
         );
     }
+  }
+
+  void _openHospitality() {
+    if (_connection == null) {
+      _showAlert('Configure a connection in Settings first');
+      return;
+    }
+    if (_connection!.type != ConnectionType.saas) {
+      _showAlert('Hospitality currently supports SaaS connections only');
+      return;
+    }
+    if (_connection!.tenant.isEmpty || _connection!.company.isEmpty || _connection!.companyName.isEmpty) {
+      _showAlert('Tenant, Environment, and Company are required for Hospitality');
+      return;
+    }
+    Navigator.push(
+      context,
+      CupertinoPageRoute(
+        builder: (_) => HospitalityPage(config: _connection!),
+      ),
+    );
   }
 
   void _showAlert(String message) {
