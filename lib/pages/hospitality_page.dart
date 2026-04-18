@@ -143,6 +143,7 @@ class _HospitalityPageState extends State<HospitalityPage> {
           restaurants: layout.restaurants(),
           types: _restaurant == null ? const [] : layout.typesFor(_restaurant!),
           restaurant: _restaurant,
+          restaurantLabel: _restaurant == null ? null : layout.restaurantLabel(_restaurant!),
           type: type,
           onPickRestaurant: _pickRestaurant,
           onPickType: _pickType,
@@ -213,7 +214,23 @@ class _HospitalityPageState extends State<HospitalityPage> {
     final layout = _layout;
     if (layout == null) return;
     final restaurants = layout.restaurants();
-    final picked = await _pickString('Restaurant', restaurants);
+    final picked = await showCupertinoModalPopup<String>(
+      context: context,
+      builder: (ctx) => CupertinoActionSheet(
+        title: const Text('Restaurant'),
+        actions: [
+          for (final code in restaurants)
+            CupertinoActionSheetAction(
+              onPressed: () => Navigator.pop(ctx, code),
+              child: Text(layout.restaurantLabel(code)),
+            ),
+        ],
+        cancelButton: CupertinoActionSheetAction(
+          onPressed: () => Navigator.pop(ctx),
+          child: const Text('Cancel'),
+        ),
+      ),
+    );
     if (picked == null) return;
     final types = layout.typesFor(picked);
     setState(() {
@@ -251,31 +268,13 @@ class _HospitalityPageState extends State<HospitalityPage> {
     });
   }
 
-  Future<String?> _pickString(String title, List<String> options) {
-    return showCupertinoModalPopup<String>(
-      context: context,
-      builder: (ctx) => CupertinoActionSheet(
-        title: Text(title),
-        actions: [
-          for (final o in options)
-            CupertinoActionSheetAction(
-              onPressed: () => Navigator.pop(ctx, o),
-              child: Text(o),
-            ),
-        ],
-        cancelButton: CupertinoActionSheetAction(
-          onPressed: () => Navigator.pop(ctx),
-          child: const Text('Cancel'),
-        ),
-      ),
-    );
-  }
 }
 
 class _FiltersBar extends StatelessWidget {
   final List<String> restaurants;
   final List<HospitalityType> types;
   final String? restaurant;
+  final String? restaurantLabel;
   final HospitalityType? type;
   final VoidCallback onPickRestaurant;
   final VoidCallback onPickType;
@@ -284,6 +283,7 @@ class _FiltersBar extends StatelessWidget {
     required this.restaurants,
     required this.types,
     required this.restaurant,
+    required this.restaurantLabel,
     required this.type,
     required this.onPickRestaurant,
     required this.onPickType,
@@ -300,10 +300,10 @@ class _FiltersBar extends StatelessWidget {
       child: Row(
         children: [
           Expanded(
-            flex: 2,
+            flex: 3,
             child: _PickerButton(
               label: 'Restaurant',
-              value: restaurant ?? '—',
+              value: restaurantLabel ?? restaurant ?? '—',
               onTap: restaurants.isEmpty ? null : onPickRestaurant,
             ),
           ),
