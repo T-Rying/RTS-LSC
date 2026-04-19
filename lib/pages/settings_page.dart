@@ -182,6 +182,68 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
+  void _showAdyenDialog() {
+    final merchantController =
+        TextEditingController(text: _connection?.adyenMerchantAccount ?? '');
+    final apiKeyController =
+        TextEditingController(text: _connection?.adyenApiKey ?? '');
+    final sharedKeyController =
+        TextEditingController(text: _connection?.adyenSharedKey ?? '');
+    final storeIdController =
+        TextEditingController(text: _connection?.adyenStoreId ?? '');
+    final terminalIdController =
+        TextEditingController(text: _connection?.adyenTerminalId ?? '');
+    var testMode = _connection?.adyenTestMode ?? true;
+
+    showCupertinoModalPopup(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => _Sheet(
+          title: 'Adyen',
+          onSave: () async {
+            if (_connection == null) return;
+            _connection!.adyenMerchantAccount = merchantController.text.trim();
+            _connection!.adyenApiKey = apiKeyController.text.trim();
+            _connection!.adyenSharedKey = sharedKeyController.text.trim();
+            _connection!.adyenStoreId = storeIdController.text.trim();
+            _connection!.adyenTerminalId = terminalIdController.text.trim();
+            _connection!.adyenTestMode = testMode;
+            await widget.envService.saveConnection(_connection!);
+            setState(() {});
+            if (context.mounted) Navigator.pop(context);
+          },
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text(
+                  'Adyen Android Payments app credentials. '
+                  'Obtain these from your Adyen Customer Area.',
+                  style: TextStyle(fontSize: 13, color: CupertinoColors.systemGrey)),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  const Text('Test environment'),
+                  const Spacer(),
+                  CupertinoSwitch(
+                    value: testMode,
+                    activeTrackColor: _primaryColor,
+                    onChanged: (v) => setDialogState(() => testMode = v),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              _Field(controller: merchantController, placeholder: 'Merchant account'),
+              _Field(controller: apiKeyController, placeholder: 'API key', obscure: true),
+              _Field(controller: sharedKeyController, placeholder: 'Shared encryption key', obscure: true),
+              _Field(controller: storeIdController, placeholder: 'Store ID'),
+              _Field(controller: terminalIdController, placeholder: 'Terminal ID (POI ID)'),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   void _showPosDialog() {
     final usernameController = TextEditingController(text: _connection?.posUsername ?? '');
     final passwordController = TextEditingController(text: _connection?.posPassword ?? '');
@@ -377,8 +439,8 @@ class _SettingsPageState extends State<SettingsPage> {
 
             const SizedBox(height: 24),
 
-            // --- SoftPay ---
-            _SectionTitle('SoftPay', 'Payment terminal'),
+            // --- Payment Provider ---
+            _SectionTitle('Payment Provider', 'Card payment integration'),
             const SizedBox(height: 8),
             if (_connection == null)
               _Card(
@@ -388,49 +450,110 @@ class _SettingsPageState extends State<SettingsPage> {
             else
               _Card(
                 child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     Row(
-                      children: [
-                        const Icon(CupertinoIcons.creditcard, color: _primaryColor, size: 20),
-                        const SizedBox(width: 10),
-                        const Text('Enable SoftPay'),
-                        const Spacer(),
-                        CupertinoSwitch(
-                          value: _connection!.softPayEnabled,
-                          activeTrackColor: _primaryColor,
-                          onChanged: (value) async {
-                            _connection!.softPayEnabled = value;
-                            await widget.envService.saveConnection(_connection!);
-                            setState(() {});
-                          },
-                        ),
+                      children: const [
+                        Icon(CupertinoIcons.creditcard,
+                            color: _primaryColor, size: 20),
+                        SizedBox(width: 10),
+                        Text('Provider'),
                       ],
                     ),
-                    if (_connection!.softPayEnabled) ...[
-                      const SizedBox(height: 12),
+                    const SizedBox(height: 10),
+                    CupertinoSlidingSegmentedControl<PaymentProviderType>(
+                      groupValue: _connection!.paymentProvider,
+                      children: const {
+                        PaymentProviderType.none: Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                          child: Text('None'),
+                        ),
+                        PaymentProviderType.softpay: Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                          child: Text('SoftPay'),
+                        ),
+                        PaymentProviderType.adyen: Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                          child: Text('Adyen'),
+                        ),
+                      },
+                      onValueChanged: (value) async {
+                        if (value == null) return;
+                        _connection!.paymentProvider = value;
+                        await widget.envService.saveConnection(_connection!);
+                        setState(() {});
+                      },
+                    ),
+                    if (_connection!.paymentProvider ==
+                        PaymentProviderType.softpay) ...[
+                      const SizedBox(height: 14),
                       GestureDetector(
                         onTap: _showSoftPayDialog,
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             if (_connection!.softPayIntegratorId.isNotEmpty) ...[
-                              _DetailText('Integrator ID: ${_connection!.softPayIntegratorId}'),
+                              _DetailText(
+                                  'Integrator ID: ${_connection!.softPayIntegratorId}'),
                               const _DetailText('Credentials: ••••••••'),
                             ] else
-                              const Text('Tap to configure Integrator ID & Credentials',
-                                  style: TextStyle(color: CupertinoColors.systemGrey, fontSize: 13)),
+                              const Text(
+                                  'Tap to configure Integrator ID & Credentials',
+                                  style: TextStyle(
+                                      color: CupertinoColors.systemGrey,
+                                      fontSize: 13)),
                             const SizedBox(height: 8),
                             Row(
-                              children: [
-                                const Spacer(),
-                                const Icon(CupertinoIcons.chevron_forward,
+                              children: const [
+                                Spacer(),
+                                Icon(CupertinoIcons.chevron_forward,
                                     size: 16, color: CupertinoColors.systemGrey3),
                               ],
                             ),
                           ],
                         ),
                       ),
+                    ] else if (_connection!.paymentProvider ==
+                        PaymentProviderType.adyen) ...[
+                      const SizedBox(height: 14),
+                      GestureDetector(
+                        onTap: _showAdyenDialog,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            if (_connection!.adyenMerchantAccount.isNotEmpty) ...[
+                              _DetailText('Merchant: ${_connection!.adyenMerchantAccount}'),
+                              _DetailText('Store: ${_connection!.adyenStoreId}'),
+                              _DetailText('Terminal: ${_connection!.adyenTerminalId}'),
+                              _DetailText(
+                                  'Environment: ${_connection!.adyenTestMode ? "Test" : "Production"}'),
+                              const _DetailText('API Key: ••••••••'),
+                              const _DetailText('Shared Key: ••••••••'),
+                            ] else
+                              const Text(
+                                  'Tap to configure Adyen credentials',
+                                  style: TextStyle(
+                                      color: CupertinoColors.systemGrey,
+                                      fontSize: 13)),
+                            const SizedBox(height: 8),
+                            Row(
+                              children: const [
+                                Spacer(),
+                                Icon(CupertinoIcons.chevron_forward,
+                                    size: 16, color: CupertinoColors.systemGrey3),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      const Text(
+                          'Phase A: Adyen selection is wired; transactions will show '
+                          '"not implemented" until the Adyen App-Link flow lands.',
+                          style: TextStyle(
+                              fontSize: 11,
+                              color: CupertinoColors.systemGrey,
+                              fontStyle: FontStyle.italic)),
                     ],
                   ],
                 ),

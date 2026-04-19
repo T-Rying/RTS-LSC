@@ -4,7 +4,9 @@ import 'package:flutter/services.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import '../models/environment_config.dart';
 import '../services/log_service.dart';
-import '../services/softpay_plugin.dart';
+import '../services/payment/payment_provider.dart';
+import '../services/payment/payment_provider_factory.dart';
+import '../services/payment/payment_result.dart';
 
 class PosPage extends StatefulWidget {
   final EnvironmentConfig config;
@@ -18,8 +20,9 @@ class PosPage extends StatefulWidget {
 class _PosPageState extends State<PosPage> {
   late final WebViewController _controller;
   final _log = LogService.instance;
-  final _softPay = SoftPayPlugin();
-  SoftPayTransaction? _lastTransaction;
+  late final PaymentProvider _paymentProvider =
+      buildPaymentProvider(widget.config);
+  PaymentTransaction? _lastTransaction;
   String _lastTransactionId = '';
   String _lastCommand = '';
   bool _loading = true;
@@ -501,7 +504,7 @@ class _PosPageState extends State<PosPage> {
 
     _log.info('Loading: $_posUrl');
     _registerNativeJsInterfaceThenLoad();
-    _initSoftPay();
+    _initPaymentProvider();
   }
 
   /// Register the native blocking JS interface BEFORE the first page load.
@@ -561,15 +564,28 @@ class _PosPageState extends State<PosPage> {
     ''');
   }
 
-  Future<void> _initSoftPay() async {
-    if (!widget.config.softPayEnabled) {
-      _log.debug('SoftPay not enabled, skipping init');
+  Future<void> _initPaymentProvider() async {
+    // Tell the Kotlin bridge which provider is active, so its native
+    // blocking `processRequest` path (the one BC actually uses) dispatches
+    // correctly. This MUST happen before any Purchase attempt, otherwise
+    // the native bridge falls through to its SoftPay default.
+    try {
+      await const MethodChannel('com.rts.lsc/softpay').invokeMethod(
+        'setProvider',
+        {'provider': widget.config.paymentProvider.name},
+      );
+      _log.info('Native bridge provider set to: '
+          '${widget.config.paymentProvider.name}');
+    } catch (e) {
+      _log.warn('Failed to tell native bridge about active provider: $e');
+    }
+
+    if (widget.config.paymentProvider == PaymentProviderType.none) {
+      _log.debug('No payment provider configured, skipping init');
       return;
     }
-    await _softPay.initialize(
-      integratorId: widget.config.softPayIntegratorId,
-      secret: widget.config.softPayCredentials,
-    );
+    _log.info('Initialising payment provider: ${_paymentProvider.name}');
+    await _paymentProvider.initialize();
   }
 
   void _onDebugMessage(String msg) {
@@ -751,7 +767,7 @@ class _PosPageState extends State<PosPage> {
         type: 'GetLastTransaction',
         id: id,
         success: true,
-        data: _lastTransaction!.toLsCentralJson(clientTransactionId: transactionId),
+        data: _toLsCentralJson(_lastTransaction!, transactionId),
       );
     } else {
       _sendResponseToBC(
@@ -784,25 +800,67 @@ class _PosPageState extends State<PosPage> {
     }
   }
 
+  /// Serialize a provider-agnostic [PaymentTransaction] into the JSON shape
+  /// LS Central's EFT Dialog 2.0 expects. Matches the field paths that BC
+  /// reads via `GetVar` — see `POS EFT Utility.codeunit.al` for the
+  /// canonical list (AuthorizationStatus, ResultCode, Message, IDs.*,
+  /// AmountBreakdown.*, CardDetails.*, etc.).
+  ///
+  /// Previously this lived on `SoftPayTransaction.toLsCentralJson`; moved
+  /// here so it's reusable for any provider's `PaymentTransaction`.
+  String _toLsCentralJson(PaymentTransaction txn, String clientTransactionId) {
+    final amountDecimal =
+        txn.amountMinor != null ? txn.amountMinor! / 100.0 : 0.0;
+    final approved = txn.state == 'COMPLETED' || txn.state == 'APPROVED';
+    return jsonEncode({
+      'TransactionType': _lastCommand.isNotEmpty ? _lastCommand : 'Purchase',
+      'AuthorizationStatus': approved ? 'Approved' : 'Declined',
+      'AuthorizationCode': txn.authorizationCode ?? '',
+      'ResultCode': approved ? 'Success' : 'Error',
+      'Message': approved ? 'Transaction approved' : 'Transaction ${txn.state}',
+      'TenderType': txn.cardScheme ?? '',
+      'IDs': {
+        'TransactionId': clientTransactionId,
+        'EFTTransactionId': txn.providerTransactionId ?? '',
+        'TransactionDateTime': DateTime.now().toIso8601String(),
+        'AdditionalId': '',
+        'MerchantOrderId': '',
+        'BatchNumber': txn.batchNumber ?? '',
+      },
+      'CardDetails': {
+        'CardNumber': txn.cardToken ?? '',
+        'CardIssuer': txn.cardScheme ?? '',
+      },
+      'AmountBreakdown': {
+        'TotalAmount': amountDecimal,
+        'CurrencyCode': txn.currencyCode ?? 'DKK',
+        'CashbackAmount': 0.0,
+        'TaxAmount': 0.0,
+        'SurchargeAmount': 0.0,
+        'TipAmount': 0.0,
+      },
+    });
+  }
+
   Future<void> _handleEftRequest(String id, Map<String, dynamic> json) async {
     final command = json['Command'] as String? ?? 'Purchase';
-    _log.info('EFT REQ: command=$command');
+    _log.info('EFT REQ: command=$command via ${_paymentProvider.name}');
 
-    if (!widget.config.softPayEnabled) {
+    if (widget.config.paymentProvider == PaymentProviderType.none) {
       _sendResponseToBC(
         type: command, id: id, success: false,
-        data: 'SoftPay is not enabled in app settings',
+        data: 'No payment provider configured. Select one in Settings.',
       );
       return;
     }
 
-    if (!_softPay.isInitialized) {
-      _log.warn('SoftPay not initialized, attempting init...');
-      await _initSoftPay();
-      if (!_softPay.isInitialized) {
+    if (!_paymentProvider.isInitialized) {
+      _log.warn('${_paymentProvider.name} not initialized, attempting init...');
+      await _initPaymentProvider();
+      if (!_paymentProvider.isInitialized) {
         _sendResponseToBC(
           type: command, id: id, success: false,
-          data: 'SoftPay SDK failed to initialize',
+          data: '${_paymentProvider.name} failed to initialize',
         );
         return;
       }
@@ -819,19 +877,19 @@ class _PosPageState extends State<PosPage> {
 
     _log.info('  Amount=$totalAmount ($amountMinor minor) $currencyCode ref=$transactionId');
 
-    SoftPayResult result;
+    PaymentResult result;
     switch (command) {
       case 'Purchase':
       case 'PreAuth':
       case 'FinalizePreAuth':
-        result = await _softPay.purchase(
+        result = await _paymentProvider.purchase(
           amount: amountMinor,
           currency: currencyCode,
           posReferenceNumber: transactionId,
         );
         break;
       case 'Refund':
-        result = await _softPay.refund(
+        result = await _paymentProvider.refund(
           amount: amountMinor,
           currency: currencyCode,
           posReferenceNumber: transactionId,
@@ -839,11 +897,13 @@ class _PosPageState extends State<PosPage> {
         break;
       case 'Void':
         final origTxnIds = json['OriginalTransactionIds'] as Map<String, dynamic>?;
-        final origRequestId = origTxnIds?['EFTTransactionId'] as String?;
-        result = await _softPay.cancel(requestId: origRequestId);
+        final origProviderTxnId = origTxnIds?['EFTTransactionId'] as String?;
+        result = await _paymentProvider.cancel(
+          providerTransactionId: origProviderTxnId,
+        );
         break;
       default:
-        result = await _softPay.purchase(
+        result = await _paymentProvider.purchase(
           amount: amountMinor,
           currency: currencyCode,
           posReferenceNumber: transactionId,
@@ -860,16 +920,16 @@ class _PosPageState extends State<PosPage> {
     _lastCommand = command;
 
     if (result.success && result.transaction != null) {
-      _log.info('  SoftPay $command OK: ${result.transaction!.state}');
+      _log.info('  ${_paymentProvider.name} $command OK: ${result.transaction!.state}');
       _sendResponseToBC(
         type: command,
         id: id,
         success: true,
-        data: result.transaction!.toLsCentralJson(clientTransactionId: transactionId),
+        data: _toLsCentralJson(result.transaction!, transactionId),
       );
     } else {
       final errorMsg = result.errorMessage ?? 'Transaction failed';
-      _log.error('  SoftPay $command FAILED: $errorMsg');
+      _log.error('  ${_paymentProvider.name} $command FAILED: $errorMsg');
       _sendResponseToBC(
         type: command,
         id: id,

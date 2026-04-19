@@ -34,6 +34,15 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
     private var client: Client? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    // Which payment provider the Dart side has selected. Set via the
+    // `setProvider` MethodChannel; defaults to "softpay" for backwards
+    // compatibility with call sites that haven't been updated yet.
+    // When `adyen` (or anything unknown), the native blocking bridge
+    // returns a clean "not implemented" response instead of routing to
+    // SoftPay — so a user who toggles to Adyen in Settings gets a
+    // sensible message in BC instead of an accidental SoftPay call.
+    @Volatile private var activeProvider: String = "softpay"
+
     // NOTE: We deliberately do NOT bring our app back to the foreground
     // after a SoftPay transaction completes. SoftPay's anti-overlay
     // security (T.900.561 / T.900.860) explicitly forbids the POS app
@@ -56,6 +65,7 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
         when (call.method) {
             "initialize" -> initialize(call, result)
             "registerJsInterface" -> registerJsInterface(call, result)
+            "setProvider" -> setProvider(call, result)
             "purchase" -> purchase(call, result)
             "refund" -> refund(call, result)
             "cancel" -> cancel(call, result)
@@ -94,6 +104,23 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
             Log.w(TAG, "WebView not found in view hierarchy")
             result.success(false)
         }
+    }
+
+    /**
+     * Called by Dart at POS page init to tell the native bridge which
+     * payment provider is currently active. The native `processRequest`
+     * path (what BC's LSAppShell.request hits) consults this flag to
+     * decide whether to route Purchase/Refund to SoftPay or return a
+     * "not implemented" stub for Adyen.
+     *
+     * Accepts "softpay" | "adyen" | "none". Anything else is treated as
+     * unknown → stub response.
+     */
+    private fun setProvider(call: MethodCall, result: MethodChannel.Result) {
+        val provider = call.argument<String>("provider")?.lowercase() ?: "softpay"
+        activeProvider = provider
+        Log.i(TAG, "Active payment provider set to: $activeProvider")
+        result.success(true)
     }
 
     private fun initialize(call: MethodCall, result: MethodChannel.Result) {
@@ -307,13 +334,19 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
                     callback(txn ?: """{"ResultCode":"Error","Message":"No previous transaction"}""")
                 }
                 "Purchase", "PreAuth", "FinalizePreAuth" -> {
-                    processPayment(c, json, callback)
+                    if (!dispatchToActiveProvider(command, json, callback)) {
+                        processPayment(c, json, callback)
+                    }
                 }
                 "Refund" -> {
-                    processRefund(c, json, callback)
+                    if (!dispatchToActiveProvider(command, json, callback)) {
+                        processRefund(c, json, callback)
+                    }
                 }
                 else -> {
-                    processPayment(c, json, callback)
+                    if (!dispatchToActiveProvider(command, json, callback)) {
+                        processPayment(c, json, callback)
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -323,6 +356,73 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
     }
 
     private var lastTransactionJson: String? = null
+
+    /**
+     * Provider-aware dispatcher for Purchase/Refund/Void.
+     *
+     * Returns true if this function handled the request (by emitting a
+     * stub response on [callback]). Returns false if the caller should
+     * fall through to the SoftPay implementation.
+     *
+     * Right now "softpay" is the default (falls through), "adyen" returns
+     * a clean "not implemented yet" response, and "none" returns a "no
+     * provider configured" response. Phase C of the Adyen integration
+     * will replace the Adyen stub with the actual App-Link flow.
+     */
+    private fun dispatchToActiveProvider(
+        command: String,
+        json: org.json.JSONObject,
+        callback: (String) -> Unit
+    ): Boolean {
+        val transactionId = json.optString("TransactionId", "")
+        val breakdown = json.optJSONObject("AmountBreakdown")
+        val currencyCode = breakdown?.optString("CurrencyCode", "DKK") ?: "DKK"
+
+        fun errorResponse(message: String): String {
+            val resp = org.json.JSONObject()
+            resp.put("ResultCode", "Error")
+            resp.put("AuthorizationStatus", "Declined")
+            resp.put("Message", message)
+            resp.put("IDs", org.json.JSONObject().apply {
+                put("TransactionId", transactionId)
+                put("EFTTransactionId", "")
+            })
+            resp.put("AmountBreakdown", org.json.JSONObject().apply {
+                put("TotalAmount", 0)
+                put("CurrencyCode", currencyCode)
+            })
+            return resp.toString()
+        }
+
+        return when (activeProvider) {
+            "softpay" -> false // fall through to SoftPay path
+            "adyen" -> {
+                Log.w(TAG, "$command requested but Adyen provider is not " +
+                        "implemented yet (Phase A stub). Returning declined.")
+                val response = errorResponse(
+                    "Adyen $command is not yet implemented. " +
+                    "Switch to SoftPay in Settings."
+                )
+                lastTransactionJson = response
+                callback(response)
+                true
+            }
+            "none" -> {
+                Log.w(TAG, "$command requested but no payment provider is active.")
+                val response = errorResponse(
+                    "No payment provider configured. Select one in Settings."
+                )
+                lastTransactionJson = response
+                callback(response)
+                true
+            }
+            else -> {
+                Log.w(TAG, "$command requested with unknown provider " +
+                        "'$activeProvider' — falling through to SoftPay.")
+                false
+            }
+        }
+    }
 
     /**
      * Build a detailed log description of a SoftPay Failure, including the
