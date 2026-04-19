@@ -1,10 +1,7 @@
 package com.rts.lsc.rts_lsc
 
 import android.app.Activity
-import android.app.ActivityManager
-import android.app.Application
 import android.content.Context
-import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -37,71 +34,21 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
     private var client: Client? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    // Track whether our activity is currently in the foreground. We register
-    // an ActivityLifecycleCallbacks listener on first use. This lets us avoid
-    // calling moveTaskToFront when SoftPay has already returned us naturally
-    // (which is the common case and the safest path).
-    @Volatile private var isAppResumed: Boolean = true
-    private var lifecycleCallbacksRegistered: Boolean = false
-
-    private fun ensureLifecycleTracking() {
-        if (lifecycleCallbacksRegistered) return
-        val activity = context as? Activity ?: return
-        val app = activity.application ?: return
-        app.registerActivityLifecycleCallbacks(object : Application.ActivityLifecycleCallbacks {
-            override fun onActivityCreated(a: Activity, b: Bundle?) {}
-            override fun onActivityStarted(a: Activity) {}
-            override fun onActivityResumed(a: Activity) {
-                if (a === activity) isAppResumed = true
-            }
-            override fun onActivityPaused(a: Activity) {
-                if (a === activity) isAppResumed = false
-            }
-            override fun onActivityStopped(a: Activity) {}
-            override fun onActivitySaveInstanceState(a: Activity, b: Bundle) {}
-            override fun onActivityDestroyed(a: Activity) {}
-        })
-        lifecycleCallbacksRegistered = true
-    }
-
-    /**
-     * Bring our app back to foreground after SoftPay finishes — but ONLY if
-     * SoftPay didn't already return us naturally, and only after a delay long
-     * enough that SoftPay's "transaction complete" UI has dismissed.
-     *
-     * Why this is tricky:
-     * - PR #23 polled moveTaskToFront at 0/300/800/1500/3000ms and triggered
-     *   SoftPay's anti-overlay check (T.900.860 / T.12500.5001), causing 50%
-     *   transaction failures. The 0ms call was the killer — SoftPay was still
-     *   drawing its own UI and saw us trying to come on top.
-     * - Removing the polling entirely (last commit) fixed the anti-overlay
-     *   problem but caused BC's web client session to time out, because our
-     *   WebView stays paused while we're backgrounded for 26-75s.
-     *
-     * The compromise: schedule ONE moveTaskToFront call at 2500ms after the
-     * SoftPay callback. If SoftPay returned us naturally before then (the
-     * normal case), `isAppResumed` is true and we skip the call entirely.
-     * If we're still backgrounded, 2.5s is well past SoftPay's UI dismissal,
-     * so the foreground request can't be misread as overlay interference.
-     */
-    private fun restoreForegroundIfNeeded() {
-        ensureLifecycleTracking()
-        mainHandler.postDelayed({
-            try {
-                if (isAppResumed) {
-                    Log.i(TAG, "restoreForegroundIfNeeded: already resumed — skipping")
-                    return@postDelayed
-                }
-                val activity = context as? Activity ?: return@postDelayed
-                if (activity.isFinishing) return@postDelayed
-                Log.i(TAG, "restoreForegroundIfNeeded: backgrounded — moveTaskToFront")
-                val am = activity.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-                am.moveTaskToFront(activity.taskId, ActivityManager.MOVE_TASK_WITH_HOME)
-            } catch (e: Exception) {
-                Log.w(TAG, "restoreForegroundIfNeeded failed: ${e.message}")
-            }
-        }, 2500L)
-    }
+    // NOTE: We deliberately do NOT bring our app back to the foreground
+    // after a SoftPay transaction completes. SoftPay's anti-overlay
+    // security (T.900.561 / T.900.860) explicitly forbids the POS app
+    // from coming on top while SoftPay is running a transaction OR
+    // finishing up. SoftPay's AppSwitch returns us naturally once the
+    // transaction screen is dismissed, and BC's SPA tolerates a brief
+    // WebSocket drop via its own reconnection flow (validated in the
+    // 17:01 log — BC showed "Transaction failed" cleanly without any
+    // recovery dialog after a 41-second backgrounded Purchase).
+    //
+    // Earlier attempts — PR #23's foreground-service + the 2.5s delayed
+    // moveTaskToFront — either tripped the anti-overlay check or created
+    // latent races on slower devices. The native synchronous bridge
+    // (LSAppShell.request blocks via WebViewJsInterface latch.await) is
+    // enough on its own; no foreground fight is needed.
 
     val jsInterface = WebViewJsInterface(this)
 
@@ -179,9 +126,6 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
             }
 
             client = Softpay.clientWithOptionsOrNew(options)
-            // Register lifecycle tracking now so the first transaction has a
-            // correct view of foreground/background state.
-            ensureLifecycleTracking()
             Log.i(TAG, "SoftPay client created: $client")
             result.success(true)
         } catch (e: Exception) {
@@ -213,7 +157,6 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
 
             override fun onSuccess(request: Request, txn: Transaction) {
                 Log.i(TAG, "Purchase success: ${txn.state}")
-                restoreForegroundIfNeeded()
                 mainHandler.post {
                     result.success(mapOf(
                         "success" to true,
@@ -224,7 +167,6 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
 
             override fun onFailure(manager: Manager<*>, request: Request?, failure: Failure) {
                 Log.e(TAG, "Purchase failed: ${failure.code} - ${failure.message}")
-                restoreForegroundIfNeeded()
                 mainHandler.post {
                     result.success(mapOf(
                         "success" to false,
@@ -262,7 +204,6 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
 
             override fun onSuccess(request: Request, txn: Transaction) {
                 Log.i(TAG, "Refund success: ${txn.state}")
-                restoreForegroundIfNeeded()
                 mainHandler.post {
                     result.success(mapOf(
                         "success" to true,
@@ -273,7 +214,6 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
 
             override fun onFailure(manager: Manager<*>, request: Request?, failure: Failure) {
                 Log.e(TAG, "Refund failed: ${failure.code} - ${failure.message}")
-                restoreForegroundIfNeeded()
                 mainHandler.post {
                     result.success(mapOf(
                         "success" to false,
@@ -306,7 +246,6 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
 
             override fun onSuccess(request: Request, txn: Transaction) {
                 Log.i(TAG, "Cancel success: ${txn.state}")
-                restoreForegroundIfNeeded()
                 mainHandler.post {
                     result.success(mapOf(
                         "success" to true,
@@ -317,7 +256,6 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
 
             override fun onFailure(manager: Manager<*>, request: Request?, failure: Failure) {
                 Log.e(TAG, "Cancel failed: ${failure.code} - ${failure.message}")
-                restoreForegroundIfNeeded()
                 mainHandler.post {
                     result.success(mapOf(
                         "success" to false,
@@ -433,7 +371,6 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
 
             override fun onSuccess(request: Request, txn: Transaction) {
                 Log.i(TAG, "Payment success: ${txn.state}")
-                restoreForegroundIfNeeded()
                 val response = buildTransactionResponse(txn, transactionId)
                 lastTransactionJson = response
                 callback(response)
@@ -441,7 +378,6 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
 
             override fun onFailure(manager: Manager<*>, request: Request?, failure: Failure) {
                 Log.e(TAG, "Payment failed: ${failure.code} - ${failure.message}")
-                restoreForegroundIfNeeded()
                 val failTxn = failure[Transaction::class.java]
                 val response = if (failTxn != null) {
                     buildTransactionResponse(failTxn, transactionId)
@@ -474,14 +410,12 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
             override val posReferenceNumber: String? = posReference
 
             override fun onSuccess(request: Request, txn: Transaction) {
-                restoreForegroundIfNeeded()
                 val response = buildTransactionResponse(txn, transactionId)
                 lastTransactionJson = response
                 callback(response)
             }
 
             override fun onFailure(manager: Manager<*>, request: Request?, failure: Failure) {
-                restoreForegroundIfNeeded()
                 callback("""{"ResultCode":"Error","AuthorizationStatus":"Declined","Message":"${failure.message ?: "Refund failed"}","IDs":{"TransactionId":"$transactionId","EFTTransactionId":""},"AmountBreakdown":{"TotalAmount":0,"CurrencyCode":"$currencyCode"}}""")
             }
         }
