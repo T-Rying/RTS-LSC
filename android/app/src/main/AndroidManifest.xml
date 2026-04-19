@@ -31,6 +31,15 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+            <!-- Adyen App Link return URL. The Adyen Payments app calls us back
+                 via this scheme after handling /boarded, /board, and /nexo App Links.
+                 See lib/services/payment/adyen_provider.dart for the launcher side. -->
+            <intent-filter android:autoVerify="false">
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="rts-lsc" android:host="adyen-return"/>
+            </intent-filter>
         </activity>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
@@ -54,5 +63,14 @@
         <package android:name="io.softpay.sandbox" />
         <package android:name="io.softpay.debug" />
         <package android:name="io.softpay.qa" />
+        <!-- Adyen Payments apps — required for Android 11+ package visibility
+             so url_launcher can resolve https://www.adyen.com/test/... App Links
+             to the installed Adyen Payments Test app. Using intent visibility
+             rather than specific package names to avoid hardcoding, and because
+             Adyen's docs don't publish canonical package names. -->
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:scheme="https" android:host="www.adyen.com"/>
+        </intent>
     </queries>
 </manifest>

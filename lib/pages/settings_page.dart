@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/cupertino.dart';
 import '../models/environment_config.dart';
 import '../services/environment_service.dart';
+import '../services/payment/adyen_provider.dart';
 import 'qr_scanner_page.dart';
 
 const Color _primaryColor = Color(0xFF003366);
@@ -17,10 +20,69 @@ class SettingsPage extends StatefulWidget {
 class _SettingsPageState extends State<SettingsPage> {
   EnvironmentConfig? _connection;
 
+  // Adyen boarding probe state — driven by `_showAdyenBoardingResult` /
+  // `_checkAdyenBoardingStatus` below. Only populated after the user taps
+  // "Check boarding status" in the Adyen credentials sheet.
+  bool _adyenCheckingBoarding = false;
+  String? _adyenBoardingStatus; // human-readable, e.g. "Boarded: ID=..." or "Not boarded"
+  String? _adyenBoardingError;
+
   @override
   void initState() {
     super.initState();
     _connection = widget.envService.getConnection();
+  }
+
+  /// Launch the Adyen /boarded App Link probe and update the UI with the
+  /// result. Safe to call repeatedly. If the Adyen Payments Test app isn't
+  /// installed, the error banner will point the user at the install step.
+  Future<void> _checkAdyenBoardingStatus() async {
+    final conn = _connection;
+    if (conn == null) return;
+
+    setState(() {
+      _adyenCheckingBoarding = true;
+      _adyenBoardingStatus = null;
+      _adyenBoardingError = null;
+    });
+
+    try {
+      final provider = AdyenProvider(conn);
+      final ok = await provider.initialize();
+      if (!ok) {
+        setState(() {
+          _adyenCheckingBoarding = false;
+          _adyenBoardingError = 'Cannot run probe — fill in Merchant account '
+              'and Store ID first.';
+        });
+        return;
+      }
+      final boarded = await provider.checkBoardingStatus();
+      setState(() {
+        _adyenCheckingBoarding = false;
+        _adyenBoardingStatus = boarded
+            ? 'Boarded (installationId: ${provider.installationId})'
+            : 'Not boarded yet. boardingRequestToken received — complete '
+                'boarding in Phase C to pair this device.';
+      });
+    } on TimeoutException {
+      setState(() {
+        _adyenCheckingBoarding = false;
+        _adyenBoardingError = 'Timed out waiting for the Adyen app to return. '
+            'Make sure the Adyen Payments Test app is installed and able to '
+            'open https://www.adyen.com/test/... links.';
+      });
+    } on StateError catch (e) {
+      setState(() {
+        _adyenCheckingBoarding = false;
+        _adyenBoardingError = e.message;
+      });
+    } catch (e) {
+      setState(() {
+        _adyenCheckingBoarding = false;
+        _adyenBoardingError = 'Probe failed: $e';
+      });
+    }
   }
 
   void _scanQrCode() async {
@@ -177,6 +239,68 @@ class _SettingsPageState extends State<SettingsPage> {
             _Field(controller: integratorIdController, placeholder: 'Integrator ID'),
             _Field(controller: credentialsController, placeholder: 'Credentials', obscure: true),
           ],
+        ),
+      ),
+    );
+  }
+
+  void _showAdyenDialog() {
+    final merchantController =
+        TextEditingController(text: _connection?.adyenMerchantAccount ?? '');
+    final apiKeyController =
+        TextEditingController(text: _connection?.adyenApiKey ?? '');
+    final sharedKeyController =
+        TextEditingController(text: _connection?.adyenSharedKey ?? '');
+    final storeIdController =
+        TextEditingController(text: _connection?.adyenStoreId ?? '');
+    final terminalIdController =
+        TextEditingController(text: _connection?.adyenTerminalId ?? '');
+    var testMode = _connection?.adyenTestMode ?? true;
+
+    showCupertinoModalPopup(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => _Sheet(
+          title: 'Adyen',
+          onSave: () async {
+            if (_connection == null) return;
+            _connection!.adyenMerchantAccount = merchantController.text.trim();
+            _connection!.adyenApiKey = apiKeyController.text.trim();
+            _connection!.adyenSharedKey = sharedKeyController.text.trim();
+            _connection!.adyenStoreId = storeIdController.text.trim();
+            _connection!.adyenTerminalId = terminalIdController.text.trim();
+            _connection!.adyenTestMode = testMode;
+            await widget.envService.saveConnection(_connection!);
+            setState(() {});
+            if (context.mounted) Navigator.pop(context);
+          },
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text(
+                  'Adyen Android Payments app credentials. '
+                  'Obtain these from your Adyen Customer Area.',
+                  style: TextStyle(fontSize: 13, color: CupertinoColors.systemGrey)),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  const Text('Test environment'),
+                  const Spacer(),
+                  CupertinoSwitch(
+                    value: testMode,
+                    activeTrackColor: _primaryColor,
+                    onChanged: (v) => setDialogState(() => testMode = v),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              _Field(controller: merchantController, placeholder: 'Merchant account'),
+              _Field(controller: apiKeyController, placeholder: 'API key', obscure: true),
+              _Field(controller: sharedKeyController, placeholder: 'Shared encryption key', obscure: true),
+              _Field(controller: storeIdController, placeholder: 'Store ID'),
+              _Field(controller: terminalIdController, placeholder: 'Terminal ID (POI ID)'),
+            ],
+          ),
         ),
       ),
     );
@@ -377,8 +501,8 @@ class _SettingsPageState extends State<SettingsPage> {
 
             const SizedBox(height: 24),
 
-            // --- SoftPay ---
-            _SectionTitle('SoftPay', 'Payment terminal'),
+            // --- Payment Provider ---
+            _SectionTitle('Payment Provider', 'Card payment integration'),
             const SizedBox(height: 8),
             if (_connection == null)
               _Card(
@@ -388,49 +512,170 @@ class _SettingsPageState extends State<SettingsPage> {
             else
               _Card(
                 child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     Row(
-                      children: [
-                        const Icon(CupertinoIcons.creditcard, color: _primaryColor, size: 20),
-                        const SizedBox(width: 10),
-                        const Text('Enable SoftPay'),
-                        const Spacer(),
-                        CupertinoSwitch(
-                          value: _connection!.softPayEnabled,
-                          activeTrackColor: _primaryColor,
-                          onChanged: (value) async {
-                            _connection!.softPayEnabled = value;
-                            await widget.envService.saveConnection(_connection!);
-                            setState(() {});
-                          },
-                        ),
+                      children: const [
+                        Icon(CupertinoIcons.creditcard,
+                            color: _primaryColor, size: 20),
+                        SizedBox(width: 10),
+                        Text('Provider'),
                       ],
                     ),
-                    if (_connection!.softPayEnabled) ...[
-                      const SizedBox(height: 12),
+                    const SizedBox(height: 10),
+                    CupertinoSlidingSegmentedControl<PaymentProviderType>(
+                      groupValue: _connection!.paymentProvider,
+                      children: const {
+                        PaymentProviderType.none: Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                          child: Text('None'),
+                        ),
+                        PaymentProviderType.softpay: Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                          child: Text('SoftPay'),
+                        ),
+                        PaymentProviderType.adyen: Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                          child: Text('Adyen'),
+                        ),
+                      },
+                      onValueChanged: (value) async {
+                        if (value == null) return;
+                        _connection!.paymentProvider = value;
+                        await widget.envService.saveConnection(_connection!);
+                        setState(() {});
+                      },
+                    ),
+                    if (_connection!.paymentProvider ==
+                        PaymentProviderType.softpay) ...[
+                      const SizedBox(height: 14),
                       GestureDetector(
                         onTap: _showSoftPayDialog,
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             if (_connection!.softPayIntegratorId.isNotEmpty) ...[
-                              _DetailText('Integrator ID: ${_connection!.softPayIntegratorId}'),
+                              _DetailText(
+                                  'Integrator ID: ${_connection!.softPayIntegratorId}'),
                               const _DetailText('Credentials: ••••••••'),
                             ] else
-                              const Text('Tap to configure Integrator ID & Credentials',
-                                  style: TextStyle(color: CupertinoColors.systemGrey, fontSize: 13)),
+                              const Text(
+                                  'Tap to configure Integrator ID & Credentials',
+                                  style: TextStyle(
+                                      color: CupertinoColors.systemGrey,
+                                      fontSize: 13)),
                             const SizedBox(height: 8),
                             Row(
-                              children: [
-                                const Spacer(),
-                                const Icon(CupertinoIcons.chevron_forward,
+                              children: const [
+                                Spacer(),
+                                Icon(CupertinoIcons.chevron_forward,
                                     size: 16, color: CupertinoColors.systemGrey3),
                               ],
                             ),
                           ],
                         ),
                       ),
+                    ] else if (_connection!.paymentProvider ==
+                        PaymentProviderType.adyen) ...[
+                      const SizedBox(height: 14),
+                      GestureDetector(
+                        onTap: _showAdyenDialog,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            if (_connection!.adyenMerchantAccount.isNotEmpty) ...[
+                              _DetailText('Merchant: ${_connection!.adyenMerchantAccount}'),
+                              _DetailText('Store: ${_connection!.adyenStoreId}'),
+                              if (_connection!.adyenTerminalId.isNotEmpty)
+                                _DetailText('Terminal: ${_connection!.adyenTerminalId}')
+                              else
+                                const _DetailText(
+                                    'Terminal: (assigned after boarding)'),
+                              _DetailText(
+                                  'Environment: ${_connection!.adyenTestMode ? "Test" : "Production"}'),
+                              const _DetailText('API Key: ••••••••'),
+                              const _DetailText('Shared Key: ••••••••'),
+                            ] else
+                              const Text(
+                                  'Tap to configure Adyen credentials',
+                                  style: TextStyle(
+                                      color: CupertinoColors.systemGrey,
+                                      fontSize: 13)),
+                            const SizedBox(height: 8),
+                            Row(
+                              children: const [
+                                Spacer(),
+                                Icon(CupertinoIcons.chevron_forward,
+                                    size: 16, color: CupertinoColors.systemGrey3),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      // Boarding status + "Check" button — only useful once
+                      // at least the merchant account & store ID are set.
+                      if (_connection!.adyenMerchantAccount.isNotEmpty &&
+                          _connection!.adyenStoreId.isNotEmpty) ...[
+                        Row(
+                          children: [
+                            const Icon(CupertinoIcons.checkmark_shield,
+                                color: _primaryColor, size: 18),
+                            const SizedBox(width: 8),
+                            const Text('Boarding status',
+                                style: TextStyle(fontWeight: FontWeight.w500)),
+                            const Spacer(),
+                            CupertinoButton(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 12, vertical: 6),
+                              color: _primaryColor,
+                              onPressed: _adyenCheckingBoarding
+                                  ? null
+                                  : _checkAdyenBoardingStatus,
+                              child: _adyenCheckingBoarding
+                                  ? const Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        CupertinoActivityIndicator(
+                                            color: CupertinoColors.white),
+                                        SizedBox(width: 8),
+                                        Text('Checking…'),
+                                      ],
+                                    )
+                                  : const Text('Check'),
+                            ),
+                          ],
+                        ),
+                        if (_adyenBoardingStatus != null) ...[
+                          const SizedBox(height: 6),
+                          Text(
+                            _adyenBoardingStatus!,
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: _primaryColor,
+                            ),
+                          ),
+                        ],
+                        if (_adyenBoardingError != null) ...[
+                          const SizedBox(height: 6),
+                          Text(
+                            _adyenBoardingError!,
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: CupertinoColors.destructiveRed,
+                            ),
+                          ),
+                        ],
+                      ],
+                      const SizedBox(height: 6),
+                      const Text(
+                          'Phase B: boarded-probe works. Transactions still '
+                          'return "not implemented" until Phase C (Terminal API '
+                          'encryption + /nexo App Link).',
+                          style: TextStyle(
+                              fontSize: 11,
+                              color: CupertinoColors.systemGrey,
+                              fontStyle: FontStyle.italic)),
                     ],
                   ],
                 ),

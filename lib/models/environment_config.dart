@@ -4,6 +4,11 @@ enum ConnectionType { onPremise, saas }
 
 enum DeviceType { phone, tablet }
 
+/// Which payment provider is active for card transactions.
+/// Only one can be active at a time; the POS page builds the corresponding
+/// `PaymentProviderType` at startup based on this value.
+enum PaymentProviderType { none, softpay, adyen }
+
 class EnvironmentConfig {
   ConnectionType type;
   // On-Premise fields
@@ -24,10 +29,21 @@ class EnvironmentConfig {
   String posPassword;
   // Device type
   DeviceType deviceType;
-  // SoftPay
-  bool softPayEnabled;
+  // Payment provider selection
+  PaymentProviderType paymentProvider;
+  // SoftPay credentials (only used when paymentProvider == softpay)
   String softPayIntegratorId;
   String softPayCredentials;
+  // Adyen credentials (only used when paymentProvider == adyen)
+  // Obtain from your Adyen Customer Area. See the docs at
+  // https://docs.adyen.com/point-of-sale/mobile-android/build/payments-app
+  String adyenMerchantAccount;
+  String adyenApiKey;
+  String adyenSharedKey;
+  String adyenStoreId;
+  String adyenTerminalId;
+  // true = sandbox (use https://www.adyen.com/test/...); false = production.
+  bool adyenTestMode;
 
   EnvironmentConfig({
     required this.type,
@@ -43,12 +59,23 @@ class EnvironmentConfig {
     this.posUsername = '',
     this.posPassword = '',
     required this.deviceType,
-    this.softPayEnabled = false,
+    this.paymentProvider = PaymentProviderType.none,
     this.softPayIntegratorId = '',
     this.softPayCredentials = '',
+    this.adyenMerchantAccount = '',
+    this.adyenApiKey = '',
+    this.adyenSharedKey = '',
+    this.adyenStoreId = '',
+    this.adyenTerminalId = '',
+    this.adyenTestMode = true,
   });
 
   String get displayName => type == ConnectionType.saas ? 'SaaS' : 'On-Premise';
+
+  /// Backwards-compat getter. Existing call sites check `.softPayEnabled`;
+  /// this keeps them compiling until the payment-abstraction refactor lands
+  /// everywhere. Prefer `paymentProvider == PaymentProviderType.softpay`.
+  bool get softPayEnabled => paymentProvider == PaymentProviderType.softpay;
 
   Map<String, dynamic> toJson() => {
         'type': type.name,
@@ -64,12 +91,32 @@ class EnvironmentConfig {
         'posUsername': posUsername,
         'posPassword': posPassword,
         'deviceType': deviceType.name,
-        'softPayEnabled': softPayEnabled,
+        'paymentProvider': paymentProvider.name,
         'softPayIntegratorId': softPayIntegratorId,
         'softPayCredentials': softPayCredentials,
+        'adyenMerchantAccount': adyenMerchantAccount,
+        'adyenApiKey': adyenApiKey,
+        'adyenSharedKey': adyenSharedKey,
+        'adyenStoreId': adyenStoreId,
+        'adyenTerminalId': adyenTerminalId,
+        'adyenTestMode': adyenTestMode,
       };
 
   factory EnvironmentConfig.fromJson(Map<String, dynamic> json) {
+    // Migrate the legacy `softPayEnabled: bool` field → `paymentProvider` enum.
+    PaymentProviderType provider;
+    final providerName = json['paymentProvider'] as String?;
+    if (providerName != null) {
+      provider = PaymentProviderType.values.firstWhere(
+        (p) => p.name == providerName,
+        orElse: () => PaymentProviderType.none,
+      );
+    } else if (json['softPayEnabled'] == true) {
+      provider = PaymentProviderType.softpay;
+    } else {
+      provider = PaymentProviderType.none;
+    }
+
     return EnvironmentConfig(
       type: json['type'] == 'saas' ? ConnectionType.saas : ConnectionType.onPremise,
       serverUrl: json['serverUrl'] as String? ?? '',
@@ -84,9 +131,15 @@ class EnvironmentConfig {
       posUsername: json['posUsername'] as String? ?? '',
       posPassword: json['posPassword'] as String? ?? '',
       deviceType: json['deviceType'] == 'tablet' ? DeviceType.tablet : DeviceType.phone,
-      softPayEnabled: json['softPayEnabled'] as bool? ?? false,
+      paymentProvider: provider,
       softPayIntegratorId: json['softPayIntegratorId'] as String? ?? '',
       softPayCredentials: json['softPayCredentials'] as String? ?? '',
+      adyenMerchantAccount: json['adyenMerchantAccount'] as String? ?? '',
+      adyenApiKey: json['adyenApiKey'] as String? ?? '',
+      adyenSharedKey: json['adyenSharedKey'] as String? ?? '',
+      adyenStoreId: json['adyenStoreId'] as String? ?? '',
+      adyenTerminalId: json['adyenTerminalId'] as String? ?? '',
+      adyenTestMode: json['adyenTestMode'] as bool? ?? true,
     );
   }
 
