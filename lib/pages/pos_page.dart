@@ -26,6 +26,16 @@ class _PosPageState extends State<PosPage> {
   bool _credentialsInjected = false;
   bool _showDebug = false;
 
+  /// Buffered EFT response (Purchase / Refund / Void / PreAuth /
+  /// FinalizePreAuth). When SoftPay grabs the foreground, the BC
+  /// WebSocket dies and the iframe later reloads, so the response we
+  /// fire on SoftPay completion lands in a stale window. By keeping
+  /// the response around and re-delivering it after the iframe
+  /// recovers (and after the next StartSession), BC receives it
+  /// before its GetLastTransaction "recover transaction?" prompt.
+  _BufferedEftResponse? _pendingResponse;
+  static const _pendingResponseTtl = Duration(seconds: 60);
+
   String get _posUrl {
     final tenant = Uri.encodeComponent(widget.config.tenant);
     final company = Uri.encodeComponent(widget.config.company);
@@ -437,6 +447,16 @@ class _PosPageState extends State<PosPage> {
               _controller.runJavaScript(_disableKeyboardScript);
               _controller.runJavaScript(_iframeDebugScript);
               _log.debug('Bridge + keyboard + iframe debug scripts injected');
+              // The WebView often reloads after returning from SoftPay
+              // (BC's WebSocket dies while we're backgrounded). If we
+              // have a buffered EFT response from before that reload,
+              // re-deliver it now so BC can pick it up before falling
+              // back to its GetLastTransaction recovery prompt. The
+              // small delay gives the iframes a moment to mount.
+              Future.delayed(const Duration(milliseconds: 250), () {
+                if (!mounted) return;
+                _redeliverPendingResponse(reason: 'after PAGE DONE');
+              });
             }
             _tryInjectCredentials(url);
           },
@@ -611,10 +631,26 @@ class _PosPageState extends State<PosPage> {
 
     switch (type) {
       case 'StartSession':
+        // If a fresh transaction is starting (different TransactionId
+        // than what's in our buffer), drop the stale buffered response.
+        // An empty TransactionId means BC is in recovery mode — keep
+        // the buffer in that case so we can re-deliver it.
+        final newTxnId = json['TransactionId'] as String? ?? '';
+        if (_pendingResponse != null &&
+            newTxnId.isNotEmpty &&
+            newTxnId != _pendingResponse!.transactionId) {
+          _log.debug(
+              'New StartSession for $newTxnId — dropping stale buffered ${_pendingResponse!.type}');
+          _pendingResponse = null;
+        }
         _sendResponseToBC(
           type: 'STARTSESSION', id: id, success: true,
           data: '{"SessionResponse":"StartingSessionSuccessful"}',
         );
+        // After answering StartSession, re-deliver any pending EFT
+        // response so BC receives it before falling back to its
+        // GetLastTransaction recovery prompt.
+        _redeliverPendingResponse(reason: 'after StartSession');
         break;
       case 'FinishSession':
         _sendResponseToBC(type: 'FINISHSESSION', id: id, success: true, data: '{}');
@@ -762,6 +798,8 @@ class _PosPageState extends State<PosPage> {
         id: id,
         success: true,
         data: result.transaction!.toLsCentralJson(clientTransactionId: transactionId),
+        buffer: true,
+        transactionId: transactionId,
       );
     } else {
       final errorMsg = result.errorMessage ?? 'Transaction failed';
@@ -771,6 +809,8 @@ class _PosPageState extends State<PosPage> {
         id: id,
         success: false,
         data: errorMsg,
+        buffer: true,
+        transactionId: transactionId,
       );
     }
   }
@@ -780,8 +820,50 @@ class _PosPageState extends State<PosPage> {
     required String id,
     required bool success,
     required String data,
+    bool buffer = false,
+    String transactionId = '',
   }) async {
-    _log.info('RESPONSE: type=$type id=$id success=$success');
+    await _deliverResponseJs(type, id, success, data, isRedelivery: false);
+    if (buffer) {
+      _pendingResponse = _BufferedEftResponse(
+        type: type,
+        id: id,
+        success: success,
+        data: data,
+        transactionId: transactionId,
+        sentAt: DateTime.now(),
+      );
+    }
+  }
+
+  /// Re-delivers the most recent buffered EFT response if it's still
+  /// fresh enough to be useful. Called from `onPageFinished` (the
+  /// iframe just reloaded after returning from SoftPay) and from the
+  /// StartSession dispatch (BC just started its recovery cycle).
+  /// Multiple deliveries to `OnResponseFromAddInEx` for the same
+  /// (type, id) are de-duplicated by BC.
+  void _redeliverPendingResponse({required String reason}) {
+    final p = _pendingResponse;
+    if (p == null) return;
+    if (DateTime.now().difference(p.sentAt) > _pendingResponseTtl) {
+      _log.debug('Pending ${p.type} response expired (TTL ${_pendingResponseTtl.inSeconds}s)');
+      _pendingResponse = null;
+      return;
+    }
+    _log.info('REDELIVER: ${p.type} id=${p.id} ($reason)');
+    _deliverResponseJs(p.type, p.id, p.success, p.data, isRedelivery: true);
+  }
+
+  Future<void> _deliverResponseJs(
+    String type,
+    String id,
+    bool success,
+    String data, {
+    required bool isRedelivery,
+  }) async {
+    if (!isRedelivery) {
+      _log.info('RESPONSE: type=$type id=$id success=$success');
+    }
     final escapedData = data.replaceAll('\\', '\\\\').replaceAll("'", "\\'");
     // Deliver to main frame and also try all iframes (control add-in context)
     await _controller.runJavaScript('''
@@ -951,4 +1033,25 @@ class _PosPageState extends State<PosPage> {
       ),
     );
   }
+}
+
+/// One EFT response (Purchase / Refund / Void / PreAuth /
+/// FinalizePreAuth) cached so we can re-deliver it after the BC
+/// iframe reloads — see [_PosPageState._redeliverPendingResponse].
+class _BufferedEftResponse {
+  final String type;
+  final String id;
+  final bool success;
+  final String data;
+  final String transactionId;
+  final DateTime sentAt;
+
+  const _BufferedEftResponse({
+    required this.type,
+    required this.id,
+    required this.success,
+    required this.data,
+    required this.transactionId,
+    required this.sentAt,
+  });
 }
