@@ -6,12 +6,6 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <!-- POST_NOTIFICATIONS is required on Android 13+ to show the
-         keep-alive notification while a SoftPay transaction is running.
-         If the user denies it the foreground service still runs (the
-         notification is just hidden), so the keep-alive effect works
-         either way. -->
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <application
         android:label="rts_lsc"
         android:name="${applicationName}"
@@ -43,16 +37,6 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
-
-        <!-- Foreground service that stays running while a SoftPay
-             transaction is in flight, so Android can't suspend our
-             process before the SDK delivers the result back. Uses
-             foregroundServiceType="shortService" so we don't need a
-             per-type permission on Android 14+. -->
-        <service
-            android:name=".EftKeepAliveService"
-            android:exported="false"
-            android:foregroundServiceType="shortService" />
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

@@ -35,22 +35,6 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
     private var client: Client? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    /**
-     * Pin the process at FOREGROUND_SERVICE priority while a SoftPay
-     * transaction is in flight, otherwise Android suspends us when
-     * SoftPay's POS app takes the foreground and the SDK's IPC reply
-     * lands in a sleeping process — the SDK then auto-cancels the
-     * transaction with `12500/5001 - CANCELLING_AUTO`. See
-     * [EftKeepAliveService] for details.
-     */
-    private fun startKeepAlive() {
-        EftKeepAliveService.start(context.applicationContext)
-    }
-
-    private fun stopKeepAlive() {
-        EftKeepAliveService.stop(context.applicationContext)
-    }
-
     // Bring our app back to foreground after SoftPay finishes
     private fun bringToForeground() {
         for (delay in longArrayOf(0, 300, 800, 1500, 3000)) {
@@ -171,7 +155,6 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
 
             override fun onSuccess(request: Request, txn: Transaction) {
                 Log.i(TAG, "Purchase success: ${txn.state}")
-                stopKeepAlive()
                 bringToForeground()
                 mainHandler.post {
                     result.success(mapOf(
@@ -183,7 +166,6 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
 
             override fun onFailure(manager: Manager<*>, request: Request?, failure: Failure) {
                 Log.e(TAG, "Purchase failed: ${failure.code} - ${failure.message}")
-                stopKeepAlive()
                 bringToForeground()
                 mainHandler.post {
                     result.success(mapOf(
@@ -196,7 +178,6 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
             }
         }
 
-        startKeepAlive()
         c.transactionManager.requestFor(payment) { request ->
             Log.i(TAG, "Purchase request id: ${request.id}")
             request.process()
@@ -221,7 +202,6 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
 
             override fun onSuccess(request: Request, txn: Transaction) {
                 Log.i(TAG, "Refund success: ${txn.state}")
-                stopKeepAlive()
                 bringToForeground()
                 mainHandler.post {
                     result.success(mapOf(
@@ -233,7 +213,6 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
 
             override fun onFailure(manager: Manager<*>, request: Request?, failure: Failure) {
                 Log.e(TAG, "Refund failed: ${failure.code} - ${failure.message}")
-                stopKeepAlive()
                 bringToForeground()
                 mainHandler.post {
                     result.success(mapOf(
@@ -246,7 +225,6 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
             }
         }
 
-        startKeepAlive()
         c.transactionManager.requestFor(refund) { request ->
             Log.i(TAG, "Refund request id: ${request.id}")
             request.process()
@@ -268,7 +246,6 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
 
             override fun onSuccess(request: Request, txn: Transaction) {
                 Log.i(TAG, "Cancel success: ${txn.state}")
-                stopKeepAlive()
                 bringToForeground()
                 mainHandler.post {
                     result.success(mapOf(
@@ -280,7 +257,6 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
 
             override fun onFailure(manager: Manager<*>, request: Request?, failure: Failure) {
                 Log.e(TAG, "Cancel failed: ${failure.code} - ${failure.message}")
-                stopKeepAlive()
                 bringToForeground()
                 mainHandler.post {
                     result.success(mapOf(
@@ -293,7 +269,6 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
             }
         }
 
-        startKeepAlive()
         c.transactionManager.requestFor(cancellation) { request ->
             Log.i(TAG, "Cancel request id: ${request.id}")
             request.process()
@@ -363,7 +338,6 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
 
             override fun onSuccess(request: Request, txn: Transaction) {
                 Log.i(TAG, "Payment success: ${txn.state}")
-                stopKeepAlive()
                 bringToForeground()
                 val response = buildTransactionResponse(txn, transactionId)
                 lastTransactionJson = response
@@ -372,7 +346,6 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
 
             override fun onFailure(manager: Manager<*>, request: Request?, failure: Failure) {
                 Log.e(TAG, "Payment failed: ${failure.code} - ${failure.message}")
-                stopKeepAlive()
                 bringToForeground()
                 val failTxn = failure[Transaction::class.java]
                 val response = if (failTxn != null) {
@@ -385,7 +358,6 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
             }
         }
 
-        startKeepAlive()
         c.transactionManager.requestFor(payment) { request ->
             Log.i(TAG, "Payment request id: ${request.id}")
             request.process()
@@ -405,7 +377,6 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
             override val amount = amount
 
             override fun onSuccess(request: Request, txn: Transaction) {
-                stopKeepAlive()
                 bringToForeground()
                 val response = buildTransactionResponse(txn, transactionId)
                 lastTransactionJson = response
@@ -413,13 +384,11 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
             }
 
             override fun onFailure(manager: Manager<*>, request: Request?, failure: Failure) {
-                stopKeepAlive()
                 bringToForeground()
                 callback("""{"ResultCode":"Error","AuthorizationStatus":"Declined","Message":"${failure.message ?: "Refund failed"}","IDs":{"TransactionId":"$transactionId","EFTTransactionId":""},"AmountBreakdown":{"TotalAmount":0,"CurrencyCode":"$currencyCode"}}""")
             }
         }
 
-        startKeepAlive()
         c.transactionManager.requestFor(refund) { request ->
             request.process()
         }
