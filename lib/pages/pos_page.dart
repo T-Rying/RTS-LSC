@@ -732,10 +732,18 @@ class _PosPageState extends State<PosPage> {
       case 'Purchase':
       case 'PreAuth':
       case 'FinalizePreAuth':
-        result = await _softPay.purchase(amount: amountMinor, currency: currencyCode);
+        result = await _softPay.purchase(
+          amount: amountMinor,
+          currency: currencyCode,
+          posReferenceNumber: transactionId,
+        );
         break;
       case 'Refund':
-        result = await _softPay.refund(amount: amountMinor, currency: currencyCode);
+        result = await _softPay.refund(
+          amount: amountMinor,
+          currency: currencyCode,
+          posReferenceNumber: transactionId,
+        );
         break;
       case 'Void':
         final origTxnIds = json['OriginalTransactionIds'] as Map<String, dynamic>?;
@@ -743,7 +751,11 @@ class _PosPageState extends State<PosPage> {
         result = await _softPay.cancel(requestId: origRequestId);
         break;
       default:
-        result = await _softPay.purchase(amount: amountMinor, currency: currencyCode);
+        result = await _softPay.purchase(
+          amount: amountMinor,
+          currency: currencyCode,
+          posReferenceNumber: transactionId,
+        );
         break;
     }
 

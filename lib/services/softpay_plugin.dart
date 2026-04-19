@@ -32,14 +32,20 @@ class SoftPayPlugin {
 
   /// Process a purchase transaction.
   /// [amount] is in minor units (e.g. 2000 = 20.00 DKK).
+  /// [posReferenceNumber] is an optional reference (typically LS Central's
+  /// TransactionId) passed to SoftPay so the SDK can correlate retries and
+  /// recoveries on its side. SoftPay strongly recommends always supplying this.
   Future<SoftPayResult> purchase({
     required int amount,
     required String currency,
+    String? posReferenceNumber,
   }) async {
-    _log.info('SoftPay: purchase amount=$amount currency=$currency');
+    _log.info('SoftPay: purchase amount=$amount currency=$currency ref=$posReferenceNumber');
     return _callTransaction('purchase', {
       'amount': amount,
       'currency': currency,
+      if (posReferenceNumber != null && posReferenceNumber.isNotEmpty)
+        'posReferenceNumber': posReferenceNumber,
     });
   }
 
@@ -47,11 +53,14 @@ class SoftPayPlugin {
   Future<SoftPayResult> refund({
     required int amount,
     required String currency,
+    String? posReferenceNumber,
   }) async {
-    _log.info('SoftPay: refund amount=$amount currency=$currency');
+    _log.info('SoftPay: refund amount=$amount currency=$currency ref=$posReferenceNumber');
     return _callTransaction('refund', {
       'amount': amount,
       'currency': currency,
+      if (posReferenceNumber != null && posReferenceNumber.isNotEmpty)
+        'posReferenceNumber': posReferenceNumber,
     });
   }
 

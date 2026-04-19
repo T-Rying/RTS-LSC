@@ -1,7 +1,6 @@
 package com.rts.lsc.rts_lsc
 
 import android.app.Activity
-import android.app.ActivityManager
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
@@ -35,20 +34,11 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
     private var client: Client? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    // Bring our app back to foreground after SoftPay finishes
-    private fun bringToForeground() {
-        for (delay in longArrayOf(0, 300, 800, 1500, 3000)) {
-            mainHandler.postDelayed({
-                try {
-                    val activity = context as? Activity
-                    if (activity != null && !activity.isFinishing) {
-                        val am = activity.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-                        am.moveTaskToFront(activity.taskId, ActivityManager.MOVE_TASK_WITH_HOME)
-                    }
-                } catch (_: Exception) {}
-            }, delay)
-        }
-    }
+    // NOTE: We deliberately do NOT call moveTaskToFront after SoftPay returns.
+    // The SoftPay SDK's AppSwitch mechanism returns control to us automatically
+    // when the transaction completes. Forcing focus on top can race with that
+    // return and trip SoftPay's anti-overlay security check (T.900.860 /
+    // T.12500.5001 — see SoftPay common errors docs). PR #23 demonstrated this.
 
     val jsInterface = WebViewJsInterface(this)
 
@@ -143,8 +133,9 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
 
         val amountMinor = call.argument<Number>("amount")?.toLong() ?: 0L
         val currency = call.argument<String>("currency") ?: "DKK"
+        val posReference = call.argument<String>("posReferenceNumber")?.takeIf { it.isNotBlank() }
 
-        Log.i(TAG, "Purchase: $amountMinor $currency")
+        Log.i(TAG, "Purchase: $amountMinor $currency posRef=$posReference")
         val amount = amountOf(amountMinor, currency)
 
         // Use non-blocking requestFor/process pattern (like the real AppShell)
@@ -152,10 +143,10 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
         // SoftPay activity return event.
         val payment = object : PaymentTransaction {
             override val amount = amount
+            override val posReferenceNumber: String? = posReference
 
             override fun onSuccess(request: Request, txn: Transaction) {
                 Log.i(TAG, "Purchase success: ${txn.state}")
-                bringToForeground()
                 mainHandler.post {
                     result.success(mapOf(
                         "success" to true,
@@ -166,7 +157,6 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
 
             override fun onFailure(manager: Manager<*>, request: Request?, failure: Failure) {
                 Log.e(TAG, "Purchase failed: ${failure.code} - ${failure.message}")
-                bringToForeground()
                 mainHandler.post {
                     result.success(mapOf(
                         "success" to false,
@@ -193,16 +183,17 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
 
         val amountMinor = call.argument<Number>("amount")?.toLong() ?: 0L
         val currency = call.argument<String>("currency") ?: "DKK"
+        val posReference = call.argument<String>("posReferenceNumber")?.takeIf { it.isNotBlank() }
 
-        Log.i(TAG, "Refund: $amountMinor $currency")
+        Log.i(TAG, "Refund: $amountMinor $currency posRef=$posReference")
         val amount = amountOf(amountMinor, currency)
 
         val refund = object : RefundTransaction {
             override val amount = amount
+            override val posReferenceNumber: String? = posReference
 
             override fun onSuccess(request: Request, txn: Transaction) {
                 Log.i(TAG, "Refund success: ${txn.state}")
-                bringToForeground()
                 mainHandler.post {
                     result.success(mapOf(
                         "success" to true,
@@ -213,7 +204,6 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
 
             override fun onFailure(manager: Manager<*>, request: Request?, failure: Failure) {
                 Log.e(TAG, "Refund failed: ${failure.code} - ${failure.message}")
-                bringToForeground()
                 mainHandler.post {
                     result.success(mapOf(
                         "success" to false,
@@ -246,7 +236,6 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
 
             override fun onSuccess(request: Request, txn: Transaction) {
                 Log.i(TAG, "Cancel success: ${txn.state}")
-                bringToForeground()
                 mainHandler.post {
                     result.success(mapOf(
                         "success" to true,
@@ -257,7 +246,6 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
 
             override fun onFailure(manager: Manager<*>, request: Request?, failure: Failure) {
                 Log.e(TAG, "Cancel failed: ${failure.code} - ${failure.message}")
-                bringToForeground()
                 mainHandler.post {
                     result.success(mapOf(
                         "success" to false,
@@ -329,16 +317,21 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
         val currencyCode = breakdown?.optString("CurrencyCode", "DKK") ?: "DKK"
         val transactionId = json.optString("TransactionId", "")
         val amountMinor = (totalAmount * 100).toLong()
+        // Pass BC's TransactionId to SoftPay as posReferenceNumber so the SDK
+        // can correlate retries/recoveries on its side. SoftPay docs strongly
+        // recommend always supplying this. See PaymentTransaction interface
+        // (io.softpay.client.transaction.PaymentTransaction#getPosReferenceNumber).
+        val posReference = transactionId.takeIf { it.isNotBlank() }
 
         Log.i(TAG, "processPayment: $amountMinor $currencyCode ref=$transactionId")
         val amount = amountOf(amountMinor, currencyCode)
 
         val payment = object : PaymentTransaction {
             override val amount = amount
+            override val posReferenceNumber: String? = posReference
 
             override fun onSuccess(request: Request, txn: Transaction) {
                 Log.i(TAG, "Payment success: ${txn.state}")
-                bringToForeground()
                 val response = buildTransactionResponse(txn, transactionId)
                 lastTransactionJson = response
                 callback(response)
@@ -346,7 +339,6 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
 
             override fun onFailure(manager: Manager<*>, request: Request?, failure: Failure) {
                 Log.e(TAG, "Payment failed: ${failure.code} - ${failure.message}")
-                bringToForeground()
                 val failTxn = failure[Transaction::class.java]
                 val response = if (failTxn != null) {
                     buildTransactionResponse(failTxn, transactionId)
@@ -370,21 +362,21 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
         val currencyCode = breakdown?.optString("CurrencyCode", "DKK") ?: "DKK"
         val transactionId = json.optString("TransactionId", "")
         val amountMinor = (totalAmount * 100).toLong()
+        val posReference = transactionId.takeIf { it.isNotBlank() }
 
         val amount = amountOf(amountMinor, currencyCode)
 
         val refund = object : RefundTransaction {
             override val amount = amount
+            override val posReferenceNumber: String? = posReference
 
             override fun onSuccess(request: Request, txn: Transaction) {
-                bringToForeground()
                 val response = buildTransactionResponse(txn, transactionId)
                 lastTransactionJson = response
                 callback(response)
             }
 
             override fun onFailure(manager: Manager<*>, request: Request?, failure: Failure) {
-                bringToForeground()
                 callback("""{"ResultCode":"Error","AuthorizationStatus":"Declined","Message":"${failure.message ?: "Refund failed"}","IDs":{"TransactionId":"$transactionId","EFTTransactionId":""},"AmountBreakdown":{"TotalAmount":0,"CurrencyCode":"$currencyCode"}}""")
             }
         }
