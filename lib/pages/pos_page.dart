@@ -491,46 +491,74 @@ class _PosPageState extends State<PosPage> {
       )
       ..setOnConsoleMessage((msg) {
         _log.debug('CONSOLE[${msg.level.name}]: ${msg.message}');
-      })
-      ..loadRequest(Uri.parse(_posUrl));
-
-    // Register native blocking JS interface for SoftPay SDK calls.
-    // The LSC_DeviceDialog calls LSAppShell.request() and expects a
-    // SYNCHRONOUS return value. Flutter JS channels are async, so we
-    // use Android's addJavascriptInterface for a real blocking method.
-    _registerNativeJsInterface();
+      });
+      // NOTE: loadRequest is deliberately NOT in the builder chain.
+      // Android's addJavascriptInterface only injects into pages loaded
+      // AFTER the call. If we load before registering, the very first
+      // page (and all its iframes) will never see LSAppShellNative, and
+      // BC's SPA navigation (pushState) doesn't trigger a real reload
+      // to pick it up later. So register FIRST, load SECOND.
 
     _log.info('Loading: $_posUrl');
+    _registerNativeJsInterfaceThenLoad();
     _initSoftPay();
   }
 
+  /// Register the native blocking JS interface BEFORE the first page load.
+  /// Android's addJavascriptInterface only takes effect on pages loaded
+  /// AFTER the call, so this ordering is critical. Called once from initState.
+  Future<void> _registerNativeJsInterfaceThenLoad() async {
+    // Give the WebView widget a moment to actually attach to the native
+    // view hierarchy. findWebView() on the Kotlin side walks
+    // activity.window.decorView looking for the android.webkit.WebView
+    // instance — which only exists after the Flutter widget is rendered.
+    await Future.delayed(const Duration(milliseconds: 500));
+    try {
+      final result = await const MethodChannel('com.rts.lsc/softpay')
+          .invokeMethod('registerJsInterface');
+      _log.info('Native JS interface registered (BEFORE load): $result');
+    } catch (e) {
+      _log.error('Failed to register native JS interface: $e');
+    }
+    // NOW load the URL. The interface was attached to the WebView before
+    // this navigation, so it will be injected into the main frame AND
+    // all iframes created during this load.
+    _controller.loadRequest(Uri.parse(_posUrl));
+    // Verify after a short delay — if the interface is really attached,
+    // the main page's JS will see it once loading begins.
+    Future.delayed(const Duration(seconds: 2), _verifyNativeJsInterface);
+  }
+
+  /// Re-register the native blocking JS interface. Called on every
+  /// onPageFinished as a safety net for subsequent full-page navigations
+  /// (e.g. BC's initial redirect chain). Safe to call repeatedly.
   Future<void> _registerNativeJsInterface() async {
     try {
       final result = await const MethodChannel('com.rts.lsc/softpay')
           .invokeMethod('registerJsInterface');
-      _log.info('Native JS interface registered: $result');
-      // Verify the interface is actually reachable from the top-level JS
-      // context. addJavascriptInterface returns true from the native side
-      // as long as it found a WebView, but the interface only appears in
-      // JS on the NEXT page load — so at this moment we expect it present
-      // on pages loaded AFTER the registration call. Log the result so the
-      // next log file tells us definitively whether registration landed.
-      await _controller.runJavaScript('''
-        (function() {
-          try {
-            var type = typeof window.LSAppShellNative;
-            var hasReq = (type === 'object' && window.LSAppShellNative
-                          && typeof window.LSAppShellNative.request === 'function');
-            LSAppShellDebug.postMessage('[VERIFY] window.LSAppShellNative typeof=' + type
-              + ' hasRequest=' + hasReq);
-          } catch(e) {
-            try { LSAppShellDebug.postMessage('[VERIFY] error: ' + e); } catch(_) {}
-          }
-        })();
-      ''');
+      _log.info('Native JS interface re-registered: $result');
+      _verifyNativeJsInterface();
     } catch (e) {
-      _log.error('Failed to register native JS interface: $e');
+      _log.error('Failed to re-register native JS interface: $e');
     }
+  }
+
+  /// Emit a log line from JS with the current visibility of LSAppShellNative.
+  /// Tells us definitively whether the interface landed on the running page.
+  void _verifyNativeJsInterface() {
+    _controller.runJavaScript('''
+      (function() {
+        try {
+          var type = typeof window.LSAppShellNative;
+          var hasReq = (type === 'object' && window.LSAppShellNative
+                        && typeof window.LSAppShellNative.request === 'function');
+          LSAppShellDebug.postMessage('[VERIFY] window.LSAppShellNative typeof=' + type
+            + ' hasRequest=' + hasReq);
+        } catch(e) {
+          try { LSAppShellDebug.postMessage('[VERIFY] error: ' + e); } catch(_) {}
+        }
+      })();
+    ''');
   }
 
   Future<void> _initSoftPay() async {
