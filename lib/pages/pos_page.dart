@@ -478,6 +478,13 @@ class _PosPageState extends State<PosPage> {
               _controller.runJavaScript(_iframeDebugScript);
               _log.debug('Bridge + keyboard + iframe debug scripts injected');
             }
+            // Re-register the native blocking JS interface on every page
+            // finish. addJavascriptInterface only takes effect on the NEXT
+            // page load — if we registered once at init and the POS page
+            // was already loading/loaded at that moment, it never appeared.
+            // Re-registering here ensures the interface lands on every
+            // subsequent page load and all their iframes.
+            _registerNativeJsInterface();
             _tryInjectCredentials(url);
           },
         ),
@@ -498,12 +505,29 @@ class _PosPageState extends State<PosPage> {
   }
 
   Future<void> _registerNativeJsInterface() async {
-    // Wait a moment for the WebView to be fully laid out
-    await Future.delayed(const Duration(milliseconds: 500));
     try {
       final result = await const MethodChannel('com.rts.lsc/softpay')
           .invokeMethod('registerJsInterface');
       _log.info('Native JS interface registered: $result');
+      // Verify the interface is actually reachable from the top-level JS
+      // context. addJavascriptInterface returns true from the native side
+      // as long as it found a WebView, but the interface only appears in
+      // JS on the NEXT page load — so at this moment we expect it present
+      // on pages loaded AFTER the registration call. Log the result so the
+      // next log file tells us definitively whether registration landed.
+      await _controller.runJavaScript('''
+        (function() {
+          try {
+            var type = typeof window.LSAppShellNative;
+            var hasReq = (type === 'object' && window.LSAppShellNative
+                          && typeof window.LSAppShellNative.request === 'function');
+            LSAppShellDebug.postMessage('[VERIFY] window.LSAppShellNative typeof=' + type
+              + ' hasRequest=' + hasReq);
+          } catch(e) {
+            try { LSAppShellDebug.postMessage('[VERIFY] error: ' + e); } catch(_) {}
+          }
+        })();
+      ''');
     } catch (e) {
       _log.error('Failed to register native JS interface: $e');
     }

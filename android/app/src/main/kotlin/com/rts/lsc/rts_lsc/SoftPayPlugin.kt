@@ -199,7 +199,7 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
 
         val amountMinor = call.argument<Number>("amount")?.toLong() ?: 0L
         val currency = call.argument<String>("currency") ?: "DKK"
-        val posReference = call.argument<String>("posReferenceNumber")?.takeIf { it.isNotBlank() }
+        val posReference = sanitizePosReference(call.argument<String>("posReferenceNumber") ?: "")
 
         Log.i(TAG, "Purchase: $amountMinor $currency posRef=$posReference")
         val amount = amountOf(amountMinor, currency)
@@ -251,7 +251,7 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
 
         val amountMinor = call.argument<Number>("amount")?.toLong() ?: 0L
         val currency = call.argument<String>("currency") ?: "DKK"
-        val posReference = call.argument<String>("posReferenceNumber")?.takeIf { it.isNotBlank() }
+        val posReference = sanitizePosReference(call.argument<String>("posReferenceNumber") ?: "")
 
         Log.i(TAG, "Refund: $amountMinor $currency posRef=$posReference")
         val amount = amountOf(amountMinor, currency)
@@ -383,6 +383,30 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
 
     private var lastTransactionJson: String? = null
 
+    /**
+     * Sanitize a reference string for SoftPay's posReferenceNumber.
+     *
+     * SoftPay's SDK validates posReferenceNumber with the regex
+     * `[a-zA-Z0-9*+./=\-_\\]`. Any character outside that set causes
+     * "invalid action argument #3: !<value>:" and the transaction fails
+     * immediately (before SoftPay's app even launches).
+     *
+     * LS Central's TransactionId is "<receipt_no>,<line_no>" which contains
+     * a comma — not in the allowed set. We replace disallowed characters
+     * with '.' (which IS allowed) so the reference stays informative but
+     * passes SoftPay's validation.
+     */
+    private fun sanitizePosReference(raw: String): String? {
+        if (raw.isBlank()) return null
+        val allowed = Regex("[a-zA-Z0-9*+./=\\-_\\\\]")
+        val sanitized = buildString {
+            for (ch in raw) {
+                append(if (allowed.matches(ch.toString())) ch else '.')
+            }
+        }
+        return sanitized.ifBlank { null }
+    }
+
     private fun processPayment(c: Client, json: org.json.JSONObject, callback: (String) -> Unit) {
         val breakdown = json.optJSONObject("AmountBreakdown")
         val totalAmount = breakdown?.optDouble("TotalAmount", 0.0) ?: 0.0
@@ -393,7 +417,12 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
         // can correlate retries/recoveries on its side. SoftPay docs strongly
         // recommend always supplying this. See PaymentTransaction interface
         // (io.softpay.client.transaction.PaymentTransaction#getPosReferenceNumber).
-        val posReference = transactionId.takeIf { it.isNotBlank() }
+        //
+        // SoftPay's SDK rejects posReferenceNumber that contains any char outside
+        // [a-zA-Z0-9*+./=\-_\\] with "invalid action argument". BC's TransactionId
+        // format is "receipt_no,line_no" (e.g. "62,00000P0086000000051") — the
+        // comma is not in the allowed set. Replace it with a dot which IS allowed.
+        val posReference = sanitizePosReference(transactionId)
 
         Log.i(TAG, "processPayment: $amountMinor $currencyCode ref=$transactionId")
         val amount = amountOf(amountMinor, currencyCode)
@@ -436,7 +465,7 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
         val currencyCode = breakdown?.optString("CurrencyCode", "DKK") ?: "DKK"
         val transactionId = json.optString("TransactionId", "")
         val amountMinor = (totalAmount * 100).toLong()
-        val posReference = transactionId.takeIf { it.isNotBlank() }
+        val posReference = sanitizePosReference(transactionId)
 
         val amount = amountOf(amountMinor, currencyCode)
 
