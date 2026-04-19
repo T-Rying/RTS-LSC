@@ -9,6 +9,7 @@ import 'pages/pos_page.dart';
 import 'pages/settings_page.dart';
 import 'services/environment_service.dart';
 import 'services/log_service.dart';
+import 'services/payment/adyen_app_link_service.dart';
 
 late EnvironmentService environmentService;
 
@@ -27,6 +28,12 @@ void main() async {
     final prefs = await SharedPreferences.getInstance();
     environmentService = EnvironmentService(prefs);
     LogService.instance.info('App started');
+
+    // Start listening for Adyen App Link return URLs. Safe to call even when
+    // the Adyen provider is not in use — the service only handles the
+    // rts-lsc://adyen-return scheme and ignores everything else.
+    await AdyenAppLinkService.instance.start();
+
     runApp(const MyApp());
   }, (error, stack) {
     LogService.instance.error('Uncaught Dart error: $error\n$stack');

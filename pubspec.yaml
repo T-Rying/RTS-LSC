@@ -43,6 +43,10 @@ dependencies:
   http: ^1.6.0
   multicast_dns: ^0.3.3
   barcode_widget: ^2.0.4
+  # Deep link reception for Adyen App Link return URLs (Phase B of Adyen integration).
+  # The Adyen Payments app launches our app via an HTTPS return URL after processing
+  # /boarded, /board, and /nexo App Links — app_links lets us receive it.
+  app_links: ^6.3.2
 
 dev_dependencies:
   flutter_test:
