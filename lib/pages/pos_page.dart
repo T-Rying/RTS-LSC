@@ -169,6 +169,36 @@ class _PosPageState extends State<PosPage> {
         window.OnResponseFromAddInEx = function(type, id, success, jsonString) {};
       }
 
+      // Look up the native blocking JS interface (LSAppShellNative) — check
+      // window first, then top, then parent. Android's addJavascriptInterface
+      // is supposed to inject into all frames, but webview_flutter on some
+      // builds doesn't propagate it to iframes that are created dynamically.
+      // Since BC's iframes are same-origin, `top` / `parent` give us a way
+      // out when `window.LSAppShellNative` is missing.
+      // Returns { obj, source } where source is 'window' | 'top' | 'parent' | 'none'.
+      function findLSAppShellNative() {
+        try {
+          if (typeof window.LSAppShellNative !== 'undefined'
+              && window.LSAppShellNative
+              && typeof window.LSAppShellNative.request === 'function') {
+            return { obj: window.LSAppShellNative, source: 'window' };
+          }
+        } catch(e) {}
+        try {
+          if (top && top !== window && top.LSAppShellNative
+              && typeof top.LSAppShellNative.request === 'function') {
+            return { obj: top.LSAppShellNative, source: 'top' };
+          }
+        } catch(e) {}
+        try {
+          if (parent && parent !== window && parent.LSAppShellNative
+              && typeof parent.LSAppShellNative.request === 'function') {
+            return { obj: parent.LSAppShellNative, source: 'parent' };
+          }
+        } catch(e) {}
+        return { obj: null, source: 'none' };
+      }
+
       // Expose SendRequestToAddInEx on the top-level window as fallback
       window.SendRequestToAddInEx = function(type, id, jsonString) {
         D('SendRequestToAddInEx called: type=' + type + ' id=' + id);
@@ -207,16 +237,19 @@ class _PosPageState extends State<PosPage> {
         // The control add-in calls LSAppShell.request(type, json) and expects
         // a SYNCHRONOUS return value. Use the native blocking Java interface
         // (LSAppShellNative.request) which blocks until SoftPay SDK responds.
+        // If the interface isn't visible in this frame (known webview_flutter
+        // iframe propagation issue), we walk window -> top -> parent.
         var nativeRequest = function(type, json) {
-          D('LSAppShell.request(' + type + ') -> native blocking call');
-          try {
-            // window.LSAppShellNative is registered via addJavascriptInterface
-            // with a @JavascriptInterface method that blocks the JS thread.
-            if (window.LSAppShellNative && window.LSAppShellNative.request) {
-              return window.LSAppShellNative.request(type, json);
+          var found = findLSAppShellNative();
+          D('LSAppShell.request(' + type + ') -> native blocking call [source=' + found.source + ']');
+          if (found.obj) {
+            try {
+              return found.obj.request(type, json);
+            } catch(e) {
+              D('native request threw: ' + e);
             }
-          } catch(e) { D('native request error: ' + e); }
-          // Fallback to async (won't work properly but at least logs)
+          }
+          D('FALLING BACK TO ASYNC for ' + type + ' — BC will NOT block as expected');
           return send('request', arguments);
         };
         obj.request = function(type, json) { return nativeRequest(type, json); };
@@ -259,9 +292,16 @@ class _PosPageState extends State<PosPage> {
 
         obj.PostMessage = function(msg) { return send('PostMessage', arguments); };
         obj.Request = function(type, json) {
-          if (w.LSAppShellNative && w.LSAppShellNative.request) {
-            return w.LSAppShellNative.request(type, json);
+          var found = findLSAppShellNative();
+          D('LSAppShellWebPOS.Request(' + type + ') -> native blocking call [source=' + found.source + ']');
+          if (found.obj) {
+            try {
+              return found.obj.request(type, json);
+            } catch(e) {
+              D('native Request threw: ' + e);
+            }
           }
+          D('FALLING BACK TO ASYNC for LSAppShellWebPOS.Request(' + type + ')');
           return send('Request', arguments);
         };
         obj.Purchase = function() { return send('Purchase', arguments); };
@@ -438,35 +478,87 @@ class _PosPageState extends State<PosPage> {
               _controller.runJavaScript(_iframeDebugScript);
               _log.debug('Bridge + keyboard + iframe debug scripts injected');
             }
+            // Re-register the native blocking JS interface on every page
+            // finish. addJavascriptInterface only takes effect on the NEXT
+            // page load — if we registered once at init and the POS page
+            // was already loading/loaded at that moment, it never appeared.
+            // Re-registering here ensures the interface lands on every
+            // subsequent page load and all their iframes.
+            _registerNativeJsInterface();
             _tryInjectCredentials(url);
           },
         ),
       )
       ..setOnConsoleMessage((msg) {
         _log.debug('CONSOLE[${msg.level.name}]: ${msg.message}');
-      })
-      ..loadRequest(Uri.parse(_posUrl));
-
-    // Register native blocking JS interface for SoftPay SDK calls.
-    // The LSC_DeviceDialog calls LSAppShell.request() and expects a
-    // SYNCHRONOUS return value. Flutter JS channels are async, so we
-    // use Android's addJavascriptInterface for a real blocking method.
-    _registerNativeJsInterface();
+      });
+      // NOTE: loadRequest is deliberately NOT in the builder chain.
+      // Android's addJavascriptInterface only injects into pages loaded
+      // AFTER the call. If we load before registering, the very first
+      // page (and all its iframes) will never see LSAppShellNative, and
+      // BC's SPA navigation (pushState) doesn't trigger a real reload
+      // to pick it up later. So register FIRST, load SECOND.
 
     _log.info('Loading: $_posUrl');
+    _registerNativeJsInterfaceThenLoad();
     _initSoftPay();
   }
 
-  Future<void> _registerNativeJsInterface() async {
-    // Wait a moment for the WebView to be fully laid out
+  /// Register the native blocking JS interface BEFORE the first page load.
+  /// Android's addJavascriptInterface only takes effect on pages loaded
+  /// AFTER the call, so this ordering is critical. Called once from initState.
+  Future<void> _registerNativeJsInterfaceThenLoad() async {
+    // Give the WebView widget a moment to actually attach to the native
+    // view hierarchy. findWebView() on the Kotlin side walks
+    // activity.window.decorView looking for the android.webkit.WebView
+    // instance — which only exists after the Flutter widget is rendered.
     await Future.delayed(const Duration(milliseconds: 500));
     try {
       final result = await const MethodChannel('com.rts.lsc/softpay')
           .invokeMethod('registerJsInterface');
-      _log.info('Native JS interface registered: $result');
+      _log.info('Native JS interface registered (BEFORE load): $result');
     } catch (e) {
       _log.error('Failed to register native JS interface: $e');
     }
+    // NOW load the URL. The interface was attached to the WebView before
+    // this navigation, so it will be injected into the main frame AND
+    // all iframes created during this load.
+    _controller.loadRequest(Uri.parse(_posUrl));
+    // Verify after a short delay — if the interface is really attached,
+    // the main page's JS will see it once loading begins.
+    Future.delayed(const Duration(seconds: 2), _verifyNativeJsInterface);
+  }
+
+  /// Re-register the native blocking JS interface. Called on every
+  /// onPageFinished as a safety net for subsequent full-page navigations
+  /// (e.g. BC's initial redirect chain). Safe to call repeatedly.
+  Future<void> _registerNativeJsInterface() async {
+    try {
+      final result = await const MethodChannel('com.rts.lsc/softpay')
+          .invokeMethod('registerJsInterface');
+      _log.info('Native JS interface re-registered: $result');
+      _verifyNativeJsInterface();
+    } catch (e) {
+      _log.error('Failed to re-register native JS interface: $e');
+    }
+  }
+
+  /// Emit a log line from JS with the current visibility of LSAppShellNative.
+  /// Tells us definitively whether the interface landed on the running page.
+  void _verifyNativeJsInterface() {
+    _controller.runJavaScript('''
+      (function() {
+        try {
+          var type = typeof window.LSAppShellNative;
+          var hasReq = (type === 'object' && window.LSAppShellNative
+                        && typeof window.LSAppShellNative.request === 'function');
+          LSAppShellDebug.postMessage('[VERIFY] window.LSAppShellNative typeof=' + type
+            + ' hasRequest=' + hasReq);
+        } catch(e) {
+          try { LSAppShellDebug.postMessage('[VERIFY] error: ' + e); } catch(_) {}
+        }
+      })();
+    ''');
   }
 
   Future<void> _initSoftPay() async {
@@ -732,10 +824,18 @@ class _PosPageState extends State<PosPage> {
       case 'Purchase':
       case 'PreAuth':
       case 'FinalizePreAuth':
-        result = await _softPay.purchase(amount: amountMinor, currency: currencyCode);
+        result = await _softPay.purchase(
+          amount: amountMinor,
+          currency: currencyCode,
+          posReferenceNumber: transactionId,
+        );
         break;
       case 'Refund':
-        result = await _softPay.refund(amount: amountMinor, currency: currencyCode);
+        result = await _softPay.refund(
+          amount: amountMinor,
+          currency: currencyCode,
+          posReferenceNumber: transactionId,
+        );
         break;
       case 'Void':
         final origTxnIds = json['OriginalTransactionIds'] as Map<String, dynamic>?;
@@ -743,7 +843,11 @@ class _PosPageState extends State<PosPage> {
         result = await _softPay.cancel(requestId: origRequestId);
         break;
       default:
-        result = await _softPay.purchase(amount: amountMinor, currency: currencyCode);
+        result = await _softPay.purchase(
+          amount: amountMinor,
+          currency: currencyCode,
+          posReferenceNumber: transactionId,
+        );
         break;
     }
 

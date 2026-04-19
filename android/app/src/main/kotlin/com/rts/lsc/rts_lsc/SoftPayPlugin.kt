@@ -1,7 +1,6 @@
 package com.rts.lsc.rts_lsc
 
 import android.app.Activity
-import android.app.ActivityManager
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
@@ -35,20 +34,21 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
     private var client: Client? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    // Bring our app back to foreground after SoftPay finishes
-    private fun bringToForeground() {
-        for (delay in longArrayOf(0, 300, 800, 1500, 3000)) {
-            mainHandler.postDelayed({
-                try {
-                    val activity = context as? Activity
-                    if (activity != null && !activity.isFinishing) {
-                        val am = activity.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-                        am.moveTaskToFront(activity.taskId, ActivityManager.MOVE_TASK_WITH_HOME)
-                    }
-                } catch (_: Exception) {}
-            }, delay)
-        }
-    }
+    // NOTE: We deliberately do NOT bring our app back to the foreground
+    // after a SoftPay transaction completes. SoftPay's anti-overlay
+    // security (T.900.561 / T.900.860) explicitly forbids the POS app
+    // from coming on top while SoftPay is running a transaction OR
+    // finishing up. SoftPay's AppSwitch returns us naturally once the
+    // transaction screen is dismissed, and BC's SPA tolerates a brief
+    // WebSocket drop via its own reconnection flow (validated in the
+    // 17:01 log — BC showed "Transaction failed" cleanly without any
+    // recovery dialog after a 41-second backgrounded Purchase).
+    //
+    // Earlier attempts — PR #23's foreground-service + the 2.5s delayed
+    // moveTaskToFront — either tripped the anti-overlay check or created
+    // latent races on slower devices. The native synchronous bridge
+    // (LSAppShell.request blocks via WebViewJsInterface latch.await) is
+    // enough on its own; no foreground fight is needed.
 
     val jsInterface = WebViewJsInterface(this)
 
@@ -113,7 +113,7 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
             val integrator = Integrator(integratorId, merchant = "RTS-LSC", secret = integratorSecret, environment = environment)
 
             val failureHandler = failureHandlerOf { manager, request, failure ->
-                Log.w(TAG, "SoftPay failure: ${failure.code}/${failure.detailedCode} - ${failure.message}")
+                Log.w(TAG, "SoftPay failure (handler): ${describeFailure(failure)}")
             }
 
             val options = object : ClientOptions(
@@ -143,8 +143,9 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
 
         val amountMinor = call.argument<Number>("amount")?.toLong() ?: 0L
         val currency = call.argument<String>("currency") ?: "DKK"
+        val posReference = sanitizePosReference(call.argument<String>("posReferenceNumber") ?: "")
 
-        Log.i(TAG, "Purchase: $amountMinor $currency")
+        Log.i(TAG, "Purchase: $amountMinor $currency posRef=$posReference")
         val amount = amountOf(amountMinor, currency)
 
         // Use non-blocking requestFor/process pattern (like the real AppShell)
@@ -152,10 +153,10 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
         // SoftPay activity return event.
         val payment = object : PaymentTransaction {
             override val amount = amount
+            override val posReferenceNumber: String? = posReference
 
             override fun onSuccess(request: Request, txn: Transaction) {
                 Log.i(TAG, "Purchase success: ${txn.state}")
-                bringToForeground()
                 mainHandler.post {
                     result.success(mapOf(
                         "success" to true,
@@ -165,13 +166,13 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
             }
 
             override fun onFailure(manager: Manager<*>, request: Request?, failure: Failure) {
-                Log.e(TAG, "Purchase failed: ${failure.code} - ${failure.message}")
-                bringToForeground()
+                Log.e(TAG, "Purchase failed: ${describeFailure(failure)}")
                 mainHandler.post {
                     result.success(mapOf(
                         "success" to false,
                         "errorCode" to failure.code,
-                        "errorMessage" to (failure.message ?: "Purchase failed"),
+                        "errorMessage" to failureMessageForBc(failure),
+                        "supportCode" to (try { failure.supportCode() } catch (_: Exception) { null }),
                         "transaction" to transactionToMap(failure[Transaction::class.java])
                     ))
                 }
@@ -193,16 +194,17 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
 
         val amountMinor = call.argument<Number>("amount")?.toLong() ?: 0L
         val currency = call.argument<String>("currency") ?: "DKK"
+        val posReference = sanitizePosReference(call.argument<String>("posReferenceNumber") ?: "")
 
-        Log.i(TAG, "Refund: $amountMinor $currency")
+        Log.i(TAG, "Refund: $amountMinor $currency posRef=$posReference")
         val amount = amountOf(amountMinor, currency)
 
         val refund = object : RefundTransaction {
             override val amount = amount
+            override val posReferenceNumber: String? = posReference
 
             override fun onSuccess(request: Request, txn: Transaction) {
                 Log.i(TAG, "Refund success: ${txn.state}")
-                bringToForeground()
                 mainHandler.post {
                     result.success(mapOf(
                         "success" to true,
@@ -212,13 +214,13 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
             }
 
             override fun onFailure(manager: Manager<*>, request: Request?, failure: Failure) {
-                Log.e(TAG, "Refund failed: ${failure.code} - ${failure.message}")
-                bringToForeground()
+                Log.e(TAG, "Refund failed: ${describeFailure(failure)}")
                 mainHandler.post {
                     result.success(mapOf(
                         "success" to false,
                         "errorCode" to failure.code,
-                        "errorMessage" to (failure.message ?: "Refund failed"),
+                        "errorMessage" to failureMessageForBc(failure),
+                        "supportCode" to (try { failure.supportCode() } catch (_: Exception) { null }),
                         "transaction" to transactionToMap(failure[Transaction::class.java])
                     ))
                 }
@@ -246,7 +248,6 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
 
             override fun onSuccess(request: Request, txn: Transaction) {
                 Log.i(TAG, "Cancel success: ${txn.state}")
-                bringToForeground()
                 mainHandler.post {
                     result.success(mapOf(
                         "success" to true,
@@ -256,13 +257,13 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
             }
 
             override fun onFailure(manager: Manager<*>, request: Request?, failure: Failure) {
-                Log.e(TAG, "Cancel failed: ${failure.code} - ${failure.message}")
-                bringToForeground()
+                Log.e(TAG, "Cancel failed: ${describeFailure(failure)}")
                 mainHandler.post {
                     result.success(mapOf(
                         "success" to false,
                         "errorCode" to failure.code,
-                        "errorMessage" to (failure.message ?: "Cancel failed"),
+                        "errorMessage" to failureMessageForBc(failure),
+                        "supportCode" to (try { failure.supportCode() } catch (_: Exception) { null }),
                         "transaction" to transactionToMap(failure[Transaction::class.java])
                     ))
                 }
@@ -323,35 +324,113 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
 
     private var lastTransactionJson: String? = null
 
+    /**
+     * Build a detailed log description of a SoftPay Failure, including the
+     * support code (e.g. "T.12500.5001") which maps directly to entries in
+     * SoftPay's Common Errors documentation. Without this, declines show
+     * up in logs as "Ingen besked tilgængelig" (Danish fallback) and we
+     * have no way to correlate to the published error table.
+     */
+    private fun describeFailure(failure: Failure): String {
+        val support = try { failure.supportCode() } catch (_: Exception) { null } ?: "?"
+        val detailed = failure.detailedCode?.toString() ?: "?"
+        val origin = try { failure.origin?.toString() } catch (_: Exception) { null } ?: "?"
+        val msg = failure.message ?: ""
+        return "supportCode=$support code=${failure.code}/$detailed origin=$origin msg='$msg'"
+    }
+
+    /**
+     * Build a user/BC-facing message that includes the SoftPay support code.
+     * BC shows this text in its "Transaction failed" dialog, so the cashier
+     * sees e.g. "T.12500.5001 — Ingen besked tilgængelig" and we can map
+     * that back to the Common Errors doc without needing Logcat.
+     */
+    private fun failureMessageForBc(failure: Failure): String {
+        val support = try { failure.supportCode() } catch (_: Exception) { null }
+        val msg = failure.message?.takeIf { it.isNotBlank() } ?: "Payment failed"
+        return if (support != null) "$support — $msg" else msg
+    }
+
+    /**
+     * Sanitize a reference string for SoftPay's posReferenceNumber.
+     *
+     * SoftPay's SDK validates posReferenceNumber with the regex
+     * `[a-zA-Z0-9*+./=\-_\\]`. Any character outside that set causes
+     * "invalid action argument #3: !<value>:" and the transaction fails
+     * immediately (before SoftPay's app even launches).
+     *
+     * LS Central's TransactionId is "<receipt_no>,<line_no>" which contains
+     * a comma — not in the allowed set. We replace disallowed characters
+     * with '.' (which IS allowed) so the reference stays informative but
+     * passes SoftPay's validation.
+     */
+    private fun sanitizePosReference(raw: String): String? {
+        if (raw.isBlank()) return null
+        val allowed = Regex("[a-zA-Z0-9*+./=\\-_\\\\]")
+        val sanitized = buildString {
+            for (ch in raw) {
+                append(if (allowed.matches(ch.toString())) ch else '.')
+            }
+        }
+        return sanitized.ifBlank { null }
+    }
+
     private fun processPayment(c: Client, json: org.json.JSONObject, callback: (String) -> Unit) {
         val breakdown = json.optJSONObject("AmountBreakdown")
         val totalAmount = breakdown?.optDouble("TotalAmount", 0.0) ?: 0.0
         val currencyCode = breakdown?.optString("CurrencyCode", "DKK") ?: "DKK"
         val transactionId = json.optString("TransactionId", "")
         val amountMinor = (totalAmount * 100).toLong()
+        // Pass BC's TransactionId to SoftPay as posReferenceNumber so the SDK
+        // can correlate retries/recoveries on its side. SoftPay docs strongly
+        // recommend always supplying this. See PaymentTransaction interface
+        // (io.softpay.client.transaction.PaymentTransaction#getPosReferenceNumber).
+        //
+        // SoftPay's SDK rejects posReferenceNumber that contains any char outside
+        // [a-zA-Z0-9*+./=\-_\\] with "invalid action argument". BC's TransactionId
+        // format is "receipt_no,line_no" (e.g. "62,00000P0086000000051") — the
+        // comma is not in the allowed set. Replace it with a dot which IS allowed.
+        val posReference = sanitizePosReference(transactionId)
 
         Log.i(TAG, "processPayment: $amountMinor $currencyCode ref=$transactionId")
         val amount = amountOf(amountMinor, currencyCode)
 
         val payment = object : PaymentTransaction {
             override val amount = amount
+            override val posReferenceNumber: String? = posReference
 
             override fun onSuccess(request: Request, txn: Transaction) {
                 Log.i(TAG, "Payment success: ${txn.state}")
-                bringToForeground()
                 val response = buildTransactionResponse(txn, transactionId)
                 lastTransactionJson = response
                 callback(response)
             }
 
             override fun onFailure(manager: Manager<*>, request: Request?, failure: Failure) {
-                Log.e(TAG, "Payment failed: ${failure.code} - ${failure.message}")
-                bringToForeground()
+                Log.e(TAG, "Payment failed: ${describeFailure(failure)}")
                 val failTxn = failure[Transaction::class.java]
+                val bcMsg = failureMessageForBc(failure)
                 val response = if (failTxn != null) {
-                    buildTransactionResponse(failTxn, transactionId)
+                    // Override the generic "Transaction DECLINED" from
+                    // buildTransactionResponse with the SoftPay support code
+                    // message so BC's "Transaction failed" dialog shows it.
+                    val base = org.json.JSONObject(buildTransactionResponse(failTxn, transactionId))
+                    base.put("Message", bcMsg)
+                    base.toString()
                 } else {
-                    """{"ResultCode":"Error","AuthorizationStatus":"Declined","Message":"${failure.message ?: "Payment failed"}","IDs":{"TransactionId":"$transactionId","EFTTransactionId":""},"AmountBreakdown":{"TotalAmount":0,"CurrencyCode":"$currencyCode"}}"""
+                    org.json.JSONObject().apply {
+                        put("ResultCode", "Error")
+                        put("AuthorizationStatus", "Declined")
+                        put("Message", bcMsg)
+                        put("IDs", org.json.JSONObject().apply {
+                            put("TransactionId", transactionId)
+                            put("EFTTransactionId", "")
+                        })
+                        put("AmountBreakdown", org.json.JSONObject().apply {
+                            put("TotalAmount", 0)
+                            put("CurrencyCode", currencyCode)
+                        })
+                    }.toString()
                 }
                 lastTransactionJson = response
                 callback(response)
@@ -370,22 +449,38 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
         val currencyCode = breakdown?.optString("CurrencyCode", "DKK") ?: "DKK"
         val transactionId = json.optString("TransactionId", "")
         val amountMinor = (totalAmount * 100).toLong()
+        val posReference = sanitizePosReference(transactionId)
 
         val amount = amountOf(amountMinor, currencyCode)
 
         val refund = object : RefundTransaction {
             override val amount = amount
+            override val posReferenceNumber: String? = posReference
 
             override fun onSuccess(request: Request, txn: Transaction) {
-                bringToForeground()
                 val response = buildTransactionResponse(txn, transactionId)
                 lastTransactionJson = response
                 callback(response)
             }
 
             override fun onFailure(manager: Manager<*>, request: Request?, failure: Failure) {
-                bringToForeground()
-                callback("""{"ResultCode":"Error","AuthorizationStatus":"Declined","Message":"${failure.message ?: "Refund failed"}","IDs":{"TransactionId":"$transactionId","EFTTransactionId":""},"AmountBreakdown":{"TotalAmount":0,"CurrencyCode":"$currencyCode"}}""")
+                Log.e(TAG, "Refund failed: ${describeFailure(failure)}")
+                val bcMsg = failureMessageForBc(failure)
+                val response = org.json.JSONObject().apply {
+                    put("ResultCode", "Error")
+                    put("AuthorizationStatus", "Declined")
+                    put("Message", bcMsg)
+                    put("IDs", org.json.JSONObject().apply {
+                        put("TransactionId", transactionId)
+                        put("EFTTransactionId", "")
+                    })
+                    put("AmountBreakdown", org.json.JSONObject().apply {
+                        put("TotalAmount", 0)
+                        put("CurrencyCode", currencyCode)
+                    })
+                }.toString()
+                lastTransactionJson = response
+                callback(response)
             }
         }
 
