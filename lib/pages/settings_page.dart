@@ -24,13 +24,41 @@ class _SettingsPageState extends State<SettingsPage> {
   // `_checkAdyenBoardingStatus` below. Only populated after the user taps
   // "Check boarding status" in the Adyen credentials sheet.
   bool _adyenCheckingBoarding = false;
+  bool _adyenCompletingBoarding = false;
   String? _adyenBoardingStatus; // human-readable, e.g. "Boarded: ID=..." or "Not boarded"
   String? _adyenBoardingError;
+
+  /// Mirror of the cached Adyen state so the "Complete boarding" button
+  /// survives app restarts: populated in initState from the provider's
+  /// SharedPreferences cache, refreshed after each Check / Complete.
+  bool _adyenHasBoardingToken = false;
+  bool _adyenIsBoarded = false;
 
   @override
   void initState() {
     super.initState();
     _connection = widget.envService.getConnection();
+    _loadCachedAdyenBoardingState();
+  }
+
+  Future<void> _loadCachedAdyenBoardingState() async {
+    final conn = _connection;
+    if (conn == null) return;
+    if (conn.adyenMerchantAccount.isEmpty || conn.adyenStoreId.isEmpty) return;
+    final provider = AdyenProvider(conn);
+    final ok = await provider.initialize();
+    if (!ok || !mounted) return;
+    setState(() {
+      _adyenIsBoarded = provider.isBoarded;
+      _adyenHasBoardingToken = provider.lastBoardingRequestToken.isNotEmpty;
+      if (_adyenIsBoarded && _adyenBoardingStatus == null) {
+        _adyenBoardingStatus =
+            'Boarded (installationId: ${provider.installationId})';
+      } else if (_adyenHasBoardingToken && _adyenBoardingStatus == null) {
+        _adyenBoardingStatus = 'Boarding token cached — tap '
+            '"Complete boarding" to finish pairing this device.';
+      }
+    });
   }
 
   /// Launch the Adyen /boarded App Link probe and update the UI with the
@@ -60,10 +88,17 @@ class _SettingsPageState extends State<SettingsPage> {
       final boarded = await provider.checkBoardingStatus();
       setState(() {
         _adyenCheckingBoarding = false;
+        _adyenIsBoarded = boarded;
+        _adyenHasBoardingToken =
+            provider.lastBoardingRequestToken.isNotEmpty;
         _adyenBoardingStatus = boarded
             ? 'Boarded (installationId: ${provider.installationId})'
-            : 'Not boarded yet. boardingRequestToken received — complete '
-                'boarding in Phase C to pair this device.';
+            : _adyenHasBoardingToken
+                ? 'Not boarded yet — boardingRequestToken received. Tap '
+                    '"Complete boarding" to finish pairing this device.'
+                : 'Not boarded yet and no boardingRequestToken returned. '
+                    'Check that the Adyen Payments app role is enabled on '
+                    'your API key.';
       });
     } on TimeoutException {
       setState(() {
@@ -81,6 +116,62 @@ class _SettingsPageState extends State<SettingsPage> {
       setState(() {
         _adyenCheckingBoarding = false;
         _adyenBoardingError = 'Probe failed: $e';
+      });
+    }
+  }
+
+  /// Launch the Adyen /board App Link with the cached boardingRequestToken
+  /// to finish pairing this device with the merchant account. Only useful
+  /// after a /boarded probe has returned a token.
+  Future<void> _completeAdyenBoarding() async {
+    final conn = _connection;
+    if (conn == null) return;
+
+    setState(() {
+      _adyenCompletingBoarding = true;
+      _adyenBoardingStatus = null;
+      _adyenBoardingError = null;
+    });
+
+    try {
+      final provider = AdyenProvider(conn);
+      final ok = await provider.initialize();
+      if (!ok) {
+        setState(() {
+          _adyenCompletingBoarding = false;
+          _adyenBoardingError = 'Cannot complete boarding — fill in Merchant '
+              'account and Store ID first.';
+        });
+        return;
+      }
+      final boarded = await provider.completeBoarding();
+      setState(() {
+        _adyenCompletingBoarding = false;
+        _adyenIsBoarded = boarded;
+        _adyenHasBoardingToken =
+            provider.lastBoardingRequestToken.isNotEmpty;
+        _adyenBoardingStatus = boarded
+            ? 'Boarded (installationId: ${provider.installationId})'
+            : 'Boarding did not complete. The Adyen app returned '
+                'boarded=false — re-run "Check boarding status" to get a '
+                'fresh token and try again.';
+      });
+    } on TimeoutException {
+      setState(() {
+        _adyenCompletingBoarding = false;
+        _adyenBoardingError = 'Timed out waiting for the Adyen app to return. '
+            'Make sure the Adyen Payments Test app is installed and able to '
+            'open https://www.adyen.com/test/... links.';
+      });
+    } on StateError catch (e) {
+      setState(() {
+        _adyenCompletingBoarding = false;
+        _adyenBoardingError = e.message;
+      });
+    } catch (e) {
+      setState(() {
+        _adyenCompletingBoarding = false;
+        _adyenBoardingError = 'Complete boarding failed: $e';
       });
     }
   }
@@ -646,6 +737,39 @@ class _SettingsPageState extends State<SettingsPage> {
                             ),
                           ],
                         ),
+                        if (_adyenHasBoardingToken && !_adyenIsBoarded) ...[
+                          const SizedBox(height: 8),
+                          Row(
+                            children: [
+                              const Icon(CupertinoIcons.link,
+                                  color: _primaryColor, size: 18),
+                              const SizedBox(width: 8),
+                              const Text('Complete boarding',
+                                  style: TextStyle(fontWeight: FontWeight.w500)),
+                              const Spacer(),
+                              CupertinoButton(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 12, vertical: 6),
+                                color: _primaryColor,
+                                onPressed: (_adyenCompletingBoarding ||
+                                        _adyenCheckingBoarding)
+                                    ? null
+                                    : _completeAdyenBoarding,
+                                child: _adyenCompletingBoarding
+                                    ? const Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          CupertinoActivityIndicator(
+                                              color: CupertinoColors.white),
+                                          SizedBox(width: 8),
+                                          Text('Pairing…'),
+                                        ],
+                                      )
+                                    : const Text('Pair'),
+                              ),
+                            ],
+                          ),
+                        ],
                         if (_adyenBoardingStatus != null) ...[
                           const SizedBox(height: 6),
                           Text(

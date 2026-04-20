@@ -32,6 +32,13 @@ class AdyenProvider implements PaymentProvider {
   String get _installationIdKey =>
       'adyen.installationId.${config.adyenMerchantAccount}.${config.adyenStoreId}';
 
+  /// Persist the latest boardingRequestToken too — without this the
+  /// "Complete boarding" button in Settings would disappear on every app
+  /// restart even when the device has a valid (unused) token waiting to
+  /// be redeemed via /board.
+  String get _boardingRequestTokenKey =>
+      'adyen.boardingRequestToken.${config.adyenMerchantAccount}.${config.adyenStoreId}';
+
   bool _initialized = false;
   bool _isBoarded = false;
   String _installationId = '';
@@ -101,12 +108,16 @@ class AdyenProvider implements PaymentProvider {
     final prefs = await SharedPreferences.getInstance();
     _isBoarded = prefs.getBool(_boardedKey) ?? false;
     _installationId = prefs.getString(_installationIdKey) ?? '';
+    _lastBoardingRequestToken =
+        prefs.getString(_boardingRequestTokenKey) ?? '';
   }
 
   Future<void> _saveCachedBoardingState() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_boardedKey, _isBoarded);
     await prefs.setString(_installationIdKey, _installationId);
+    await prefs.setString(
+        _boardingRequestTokenKey, _lastBoardingRequestToken);
   }
 
   /// Run the `/boarded` App Link probe. Launches the Adyen Payments app,
@@ -143,6 +154,54 @@ class AdyenProvider implements PaymentProvider {
     _lastBoardingRequestToken = params['boardingRequestToken'] ?? '';
     await _saveCachedBoardingState();
 
+    return _isBoarded;
+  }
+
+  /// Finish the onboarding round-trip. Launches the Adyen app at
+  /// `/board` with the cached [boardingRequestToken]; on return we
+  /// expect `boarded=true` and a real `installationId` we can use as
+  /// POI ID in Terminal API requests.
+  ///
+  /// Requires a prior successful /boarded probe that returned a
+  /// `boardingRequestToken` — throws [StateError] if there's nothing
+  /// cached. Throws [TimeoutException] if the Adyen app doesn't return
+  /// within 30s.
+  Future<bool> completeBoarding() async {
+    if (!_initialized) {
+      final ok = await initialize();
+      if (!ok) {
+        throw StateError(
+            'Adyen provider not initialized — configure merchant account '
+            'and store ID in Settings first.');
+      }
+    }
+    if (_lastBoardingRequestToken.isEmpty) {
+      throw StateError(
+          'No boardingRequestToken cached — run "Check boarding status" '
+          'first to obtain one.');
+    }
+
+    final url = Uri.parse('$_appLinkBase/board').replace(queryParameters: {
+      'returnUrl': AdyenAppLinkService.returnUrl,
+      'boardingRequestToken': _lastBoardingRequestToken,
+    });
+    _log.info('Adyen: launching /board completion at ${url.host}${url.path}');
+
+    final returnUri = await _appLinks.launchAndAwaitReturn(url);
+    _log.info('Adyen: /board returned ${_summarizeReturn(returnUri)}');
+
+    final params = returnUri.queryParameters;
+    _isBoarded = params['boarded']?.toLowerCase() == 'true';
+    _installationId = params['installationId'] ?? _installationId;
+    // If boarding succeeded the token has been spent; otherwise keep
+    // (or update) it so a retry is possible.
+    if (_isBoarded) {
+      _lastBoardingRequestToken = '';
+    } else {
+      _lastBoardingRequestToken =
+          params['boardingRequestToken'] ?? _lastBoardingRequestToken;
+    }
+    await _saveCachedBoardingState();
     return _isBoarded;
   }
 
