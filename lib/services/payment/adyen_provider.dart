@@ -359,6 +359,70 @@ class AdyenProvider implements PaymentProvider {
     return token;
   }
 
+  /// Calls the Payments App management API
+  /// (`GET /merchants/{id}/stores/{id}/paymentsApps`) and returns the
+  /// list of installations Adyen has on record for this merchant/store.
+  /// When `adyenStoreId` is set we try store-scope first; falls back
+  /// to merchant-scope on 404.
+  ///
+  /// Intended as a diagnostic: the device-side `/boarded` probe only
+  /// reports what the app cached locally. This endpoint tells you
+  /// whether Adyen's servers actually have the installation on file
+  /// (the common failure mode behind errorCondition=UnavailableService
+  /// with empty POICapabilities).
+  Future<List<Map<String, dynamic>>> listInstalledApps() async {
+    if (config.type != ConnectionType.saas) {
+      throw StateError(
+          'Adyen Payments App calls require a SaaS connection');
+    }
+    if (config.adyenMerchantAccount.isEmpty) {
+      throw StateError('Merchant account not set.');
+    }
+    if (config.adyenApiKey.isEmpty) {
+      throw StateError('Adyen API key not set.');
+    }
+    final token = config.adyenApiKey;
+    final merchantId = Uri.encodeComponent(config.adyenMerchantAccount);
+    final storeId = config.adyenStoreId;
+
+    Future<List<Map<String, dynamic>>?> hit(String path) async {
+      final url = Uri.parse('$_paymentsAppApiBase$path');
+      _log.info('Adyen: GET $url');
+      final response = await http.get(url, headers: {
+        'X-API-Key': token,
+        'Accept': 'application/json',
+      });
+      if (response.statusCode == 404) {
+        _log.warn('Adyen: paymentsApps 404 at $path');
+        return null;
+      }
+      if (response.statusCode != 200) {
+        throw StateError(
+            'paymentsApps failed (${response.statusCode}): ${response.body}');
+      }
+      final decoded = jsonDecode(response.body);
+      if (decoded is! Map<String, dynamic>) {
+        throw StateError('paymentsApps response is not a JSON object');
+      }
+      // Adyen wraps the list in `data: [...]` or returns the array
+      // directly depending on version — handle both.
+      final list = decoded['data'] ?? decoded['paymentsApps'] ?? [];
+      if (list is! List) {
+        throw StateError('paymentsApps response missing list: '
+            '${decoded.keys.join(",")}');
+      }
+      return list.whereType<Map<String, dynamic>>().toList();
+    }
+
+    if (storeId.isNotEmpty) {
+      final storeResult = await hit(
+          '/merchants/$merchantId/stores/${Uri.encodeComponent(storeId)}/paymentsApps');
+      if (storeResult != null) return storeResult;
+    }
+    final merchantResult = await hit('/merchants/$merchantId/paymentsApps');
+    return merchantResult ?? const [];
+  }
+
   String _summarizeReturn(Uri uri) {
     final q = uri.queryParameters;
     final token = q['boardingRequestToken'];

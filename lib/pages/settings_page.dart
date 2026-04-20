@@ -25,8 +25,10 @@ class _SettingsPageState extends State<SettingsPage> {
   // "Check boarding status" in the Adyen credentials sheet.
   bool _adyenCheckingBoarding = false;
   bool _adyenCompletingBoarding = false;
+  bool _adyenCheckingServerReg = false;
   String? _adyenBoardingStatus; // human-readable, e.g. "Boarded: ID=..." or "Not boarded"
   String? _adyenBoardingError;
+  String? _adyenServerRegStatus; // result of GET /paymentsApps check
 
   /// Mirror of the cached Adyen state so the "Complete boarding" button
   /// survives app restarts: populated in initState from the provider's
@@ -172,6 +174,73 @@ class _SettingsPageState extends State<SettingsPage> {
       setState(() {
         _adyenCompletingBoarding = false;
         _adyenBoardingError = 'Complete boarding failed: $e';
+      });
+    }
+  }
+
+  /// Diagnostic: calls `GET /paymentsApps` against Adyen's Management
+  /// API to list installations Adyen has on file for this merchant/
+  /// store, and tells the user whether the currently-cached
+  /// installationId is one of them. The device-side `/boarded` probe
+  /// can say "boarded=true" while Adyen's server has no record —
+  /// this surfaces that mismatch.
+  Future<void> _checkAdyenServerRegistration() async {
+    final conn = _connection;
+    if (conn == null) return;
+
+    setState(() {
+      _adyenCheckingServerReg = true;
+      _adyenServerRegStatus = null;
+      _adyenBoardingError = null;
+    });
+
+    try {
+      final provider = AdyenProvider(conn);
+      final ok = await provider.initialize();
+      if (!ok) {
+        setState(() {
+          _adyenCheckingServerReg = false;
+          _adyenBoardingError =
+              'Cannot query — fill in Merchant account and Store ID first.';
+        });
+        return;
+      }
+      final installations = await provider.listInstalledApps();
+      final cached = provider.installationId;
+      String summary;
+      if (installations.isEmpty) {
+        summary = 'Adyen returned no installations for this merchant/store. '
+            'The boarding never landed server-side. Tap Check + Pair to '
+            'restart the boarding flow.';
+      } else {
+        final match = installations.any((i) =>
+            (i['id'] as String?) == cached ||
+            (i['installationId'] as String?) == cached);
+        final brief = installations
+            .take(3)
+            .map((i) =>
+                '${i['id'] ?? i['installationId'] ?? '?'} '
+                '(${i['status'] ?? '?'})')
+            .join('; ');
+        summary = match
+            ? 'Installation $cached is registered server-side. '
+                '${installations.length} total: $brief'
+            : 'Installation $cached is NOT in the server-side list of '
+                '${installations.length}. Existing: $brief';
+      }
+      setState(() {
+        _adyenCheckingServerReg = false;
+        _adyenServerRegStatus = summary;
+      });
+    } on StateError catch (e) {
+      setState(() {
+        _adyenCheckingServerReg = false;
+        _adyenBoardingError = e.message;
+      });
+    } catch (e) {
+      setState(() {
+        _adyenCheckingServerReg = false;
+        _adyenBoardingError = 'Server-side check failed: $e';
       });
     }
   }
@@ -844,10 +913,57 @@ class _SettingsPageState extends State<SettingsPage> {
                             ),
                           ],
                         ],
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            const Icon(CupertinoIcons.cloud,
+                                color: _primaryColor, size: 18),
+                            const SizedBox(width: 8),
+                            const Text('Server-side registration',
+                                style: TextStyle(fontWeight: FontWeight.w500)),
+                            const Spacer(),
+                            CupertinoButton(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 12, vertical: 6),
+                              color: _primaryColor,
+                              onPressed: (_adyenCheckingServerReg ||
+                                      _adyenCheckingBoarding ||
+                                      _adyenCompletingBoarding ||
+                                      _connection!.adyenApiKey.isEmpty)
+                                  ? null
+                                  : _checkAdyenServerRegistration,
+                              child: _adyenCheckingServerReg
+                                  ? const Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        CupertinoActivityIndicator(
+                                            color: CupertinoColors.white),
+                                        SizedBox(width: 8),
+                                        Text('Querying…',
+                                            style: TextStyle(
+                                                color: CupertinoColors.white)),
+                                      ],
+                                    )
+                                  : const Text('Query Adyen',
+                                      style: TextStyle(
+                                          color: CupertinoColors.white)),
+                            ),
+                          ],
+                        ),
                         if (_adyenBoardingStatus != null) ...[
                           const SizedBox(height: 6),
                           Text(
                             _adyenBoardingStatus!,
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: _primaryColor,
+                            ),
+                          ),
+                        ],
+                        if (_adyenServerRegStatus != null) ...[
+                          const SizedBox(height: 6),
+                          Text(
+                            _adyenServerRegStatus!,
                             style: const TextStyle(
                               fontSize: 12,
                               color: _primaryColor,
