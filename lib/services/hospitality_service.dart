@@ -4,27 +4,39 @@ import 'package:http/http.dart' as http;
 
 import '../models/dining_area_layout.dart';
 import '../models/dining_table.dart';
+import '../models/dining_table_status.dart';
 import '../models/environment_config.dart';
 import '../models/hospitality_type.dart';
 import 'auth_service.dart';
 import 'log_service.dart';
 
-/// Bundled result of fetching the three Hospitality OData entities:
+/// Bundled result of fetching the four Hospitality OData entities:
 /// * `HospitalityTypes` — Restaurant_No × Sales_Type configuration rows
 /// * `DiningAreaLayout` — per-area metadata (capacity, counts, grid size)
 /// * `DiningTableLayout` — per-table design-space rectangles
+/// * `DiningTables` — live per-table status (Free / Occupied / Dirty / …),
+///   capacity and shape; joined back to the layout rows by
+///   `(Dining_Area_ID, Dining_Table_No)`.
 ///
-/// All three are requested in parallel with the same OAuth bearer token.
+/// All four are requested in parallel with the same OAuth bearer token.
 class HospitalityLayout {
   final List<HospitalityType> types;
   final List<DiningAreaLayout> areaLayouts;
   final List<DiningTable> tables;
+  final Map<String, DiningTableStatus> statusByKey;
 
   const HospitalityLayout({
     required this.types,
     required this.areaLayouts,
     required this.tables,
+    required this.statusByKey,
   });
+
+  /// Returns the live status row for a drawn table, or `null` when the
+  /// `DiningTables` endpoint has no matching entry (e.g. the table
+  /// exists in the layout but isn't configured for service).
+  DiningTableStatus? statusFor(String areaId, int tableNo) =>
+      statusByKey[DiningTableStatus.keyFor(areaId, tableNo)];
 
   /// Only the types this page can actually draw — `Graphical Dining
   /// Tables` and `Dining Table Grid`. Everything else (KOT List,
@@ -110,11 +122,14 @@ class HospitalityService {
       _fetchTypes(config, token),
       _fetchAreaLayouts(config, token),
       _fetchTables(config, token),
+      _fetchTableStatuses(config, token),
     ]);
+    final statuses = results[3] as List<DiningTableStatus>;
     return HospitalityLayout(
       types: results[0] as List<HospitalityType>,
       areaLayouts: results[1] as List<DiningAreaLayout>,
       tables: results[2] as List<DiningTable>,
+      statusByKey: {for (final s in statuses) s.key: s},
     );
   }
 
@@ -158,6 +173,21 @@ class HospitalityService {
         .toList();
     _log.info('HospitalityService: fetched ${tables.length} dining tables');
     return tables;
+  }
+
+  Future<List<DiningTableStatus>> _fetchTableStatuses(
+      EnvironmentConfig config, String token) async {
+    final list = await _fetchOData(
+      token: token,
+      url: _endpoint(config, 'DiningTables'),
+      label: 'DiningTables',
+    );
+    final statuses = list
+        .whereType<Map<String, dynamic>>()
+        .map(DiningTableStatus.fromJson)
+        .toList();
+    _log.info('HospitalityService: fetched ${statuses.length} dining table statuses');
+    return statuses;
   }
 
   Future<List<dynamic>> _fetchOData({

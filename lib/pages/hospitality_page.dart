@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/dining_area_layout.dart';
 import '../models/dining_table.dart';
+import '../models/dining_table_status.dart';
 import '../models/environment_config.dart';
 import '../models/hospitality_type.dart';
 import '../services/hospitality_service.dart';
@@ -12,6 +13,71 @@ import '../services/log_service.dart';
 import '../services/replication_store.dart';
 
 const Color _primaryColor = Color(0xFF003366);
+
+/// Visual styling for a live `Dining_Table_Status` value. Matched
+/// case-insensitively with fallback to a neutral grey so unknown
+/// values from future LS Central releases still render sensibly.
+class _StatusStyle {
+  final Color fill;
+  final Color border;
+  final Color text;
+  final String label;
+  const _StatusStyle(this.fill, this.border, this.text, this.label);
+}
+
+_StatusStyle _styleForStatus(DiningTableStatus? s) {
+  final raw = (s?.status ?? '').trim();
+  if (raw.isEmpty) {
+    return _StatusStyle(
+      CupertinoColors.systemGrey5,
+      CupertinoColors.systemGrey2,
+      CupertinoColors.systemGrey,
+      'Unknown',
+    );
+  }
+  switch (raw.toLowerCase()) {
+    case 'free':
+    case 'available':
+      return const _StatusStyle(
+        Color(0xFFE4F6E7), Color(0xFF2F9E44), Color(0xFF1F6F32), 'Free',
+      );
+    case 'occupied':
+    case 'seated':
+    case 'ordered':
+      return const _StatusStyle(
+        Color(0xFFFDE1E1), Color(0xFFD14343), Color(0xFF8E1E1E), 'Seated',
+      );
+    case 'reserved':
+      return const _StatusStyle(
+        Color(0xFFE0ECFF), Color(0xFF2E5AAC), Color(0xFF1C3B73), 'Reserved',
+      );
+    case 'bill':
+    case 'bill printed':
+    case 'bill-printed':
+      return const _StatusStyle(
+        Color(0xFFFFEBD4), Color(0xFFD27D1A), Color(0xFF7B4308), 'Bill',
+      );
+    case 'dirty':
+    case 'needs cleaning':
+    case 'needscleaning':
+    case 'cleaning':
+      return const _StatusStyle(
+        Color(0xFFFFF4C2), Color(0xFFB58900), Color(0xFF6B4F00), 'Needs cleaning',
+      );
+    case 'closed':
+    case 'out of service':
+      return const _StatusStyle(
+        Color(0xFFE5E5E5), Color(0xFF8A8A8A), Color(0xFF4A4A4A), 'Closed',
+      );
+    default:
+      return _StatusStyle(
+        CupertinoColors.systemGrey5,
+        CupertinoColors.systemGrey2,
+        CupertinoColors.systemGrey,
+        raw,
+      );
+  }
+}
 
 /// Hospitality view — driven by the `HospitalityTypes` OData entity.
 ///
@@ -163,6 +229,9 @@ class _HospitalityPageState extends State<HospitalityPage> {
     final meta = (type == null || !type.hasDiningArea)
         ? null
         : layout.metaFor(type.diningAreaId, type.currentLayoutCode);
+    final DiningTableStatus? tappedStatus = _tappedTable == null
+        ? null
+        : layout.statusFor(_tappedTable!.areaId, _tappedTable!.tableNo);
 
     return Column(
       children: [
@@ -181,14 +250,16 @@ class _HospitalityPageState extends State<HospitalityPage> {
         if (type != null && type.hasDiningArea && meta != null)
           _MetaCard(meta: meta, tableCount: tables.length),
         Expanded(
-          child: _canvasArea(type, tables),
+          child: _canvasArea(type, tables, layout),
         ),
-        if (_tappedTable != null) _TableDetails(table: _tappedTable!),
+        if (_tappedTable != null)
+          _TableDetails(table: _tappedTable!, status: tappedStatus),
       ],
     );
   }
 
-  Widget _canvasArea(HospitalityType? type, List<DiningTable> tables) {
+  Widget _canvasArea(
+      HospitalityType? type, List<DiningTable> tables, HospitalityLayout layout) {
     if (type == null) {
       return const SizedBox.shrink();
     }
@@ -235,6 +306,7 @@ class _HospitalityPageState extends State<HospitalityPage> {
     return _Canvas(
       tables: tables,
       selectedTable: _tappedTable,
+      statusLookup: (t) => layout.statusFor(t.areaId, t.tableNo),
       onTapTable: (t) => setState(() => _tappedTable = t),
     );
   }
@@ -550,11 +622,13 @@ class _MetaCard extends StatelessWidget {
 class _Canvas extends StatelessWidget {
   final List<DiningTable> tables;
   final DiningTable? selectedTable;
+  final DiningTableStatus? Function(DiningTable) statusLookup;
   final ValueChanged<DiningTable> onTapTable;
 
   const _Canvas({
     required this.tables,
     required this.selectedTable,
+    required this.statusLookup,
     required this.onTapTable,
   });
 
@@ -596,6 +670,7 @@ class _Canvas extends StatelessWidget {
                         height: t.height * scale,
                         child: _TableTile(
                           table: t,
+                          status: statusLookup(t),
                           selected: selectedTable != null &&
                               selectedTable!.tableNo == t.tableNo &&
                               selectedTable!.areaId == t.areaId &&
@@ -616,23 +691,28 @@ class _Canvas extends StatelessWidget {
 
 class _TableTile extends StatelessWidget {
   final DiningTable table;
+  final DiningTableStatus? status;
   final bool selected;
   final VoidCallback onTap;
 
   const _TableTile({
     required this.table,
+    required this.status,
     required this.selected,
     required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
+    final style = _styleForStatus(status);
+    final fill = selected ? style.border : style.fill;
+    final textColor = selected ? CupertinoColors.white : style.text;
     return GestureDetector(
       onTap: onTap,
       child: Container(
         decoration: BoxDecoration(
-          color: selected ? _primaryColor : _primaryColor.withValues(alpha: 0.12),
-          border: Border.all(color: _primaryColor, width: selected ? 2 : 1),
+          color: fill,
+          border: Border.all(color: style.border, width: selected ? 2 : 1),
           borderRadius: BorderRadius.circular(6),
         ),
         alignment: Alignment.center,
@@ -644,7 +724,7 @@ class _TableTile extends StatelessWidget {
               '${table.tableNo}',
               style: TextStyle(
                 fontWeight: FontWeight.w700,
-                color: selected ? CupertinoColors.white : _primaryColor,
+                color: textColor,
               ),
             ),
           ),
@@ -656,11 +736,13 @@ class _TableTile extends StatelessWidget {
 
 class _TableDetails extends StatelessWidget {
   final DiningTable table;
+  final DiningTableStatus? status;
 
-  const _TableDetails({required this.table});
+  const _TableDetails({required this.table, required this.status});
 
   @override
   Widget build(BuildContext context) {
+    final style = _styleForStatus(status);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       decoration: const BoxDecoration(
@@ -673,7 +755,7 @@ class _TableDetails extends StatelessWidget {
             width: 36,
             height: 36,
             decoration: BoxDecoration(
-              color: _primaryColor,
+              color: style.border,
               borderRadius: BorderRadius.circular(6),
             ),
             alignment: Alignment.center,
@@ -686,20 +768,59 @@ class _TableDetails extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Table ${table.tableNo}',
-                    style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
-                const SizedBox(height: 2),
-                Text('${table.areaId} · ${table.layoutCode}',
-                    style: const TextStyle(fontSize: 12, color: CupertinoColors.systemGrey)),
-                Text(
-                  '${table.width} × ${table.height} design units',
-                  style: const TextStyle(fontSize: 12, color: CupertinoColors.systemGrey),
+                Row(
+                  children: [
+                    Text('Table ${table.tableNo}',
+                        style: const TextStyle(
+                            fontSize: 15, fontWeight: FontWeight.w600)),
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: style.fill,
+                        border: Border.all(color: style.border),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text(
+                        style.label,
+                        style: TextStyle(
+                            fontSize: 11,
+                            color: style.text,
+                            fontWeight: FontWeight.w700),
+                      ),
+                    ),
+                  ],
                 ),
+                const SizedBox(height: 2),
+                Text(
+                  _subtitle(status, table),
+                  style: const TextStyle(
+                      fontSize: 12, color: CupertinoColors.systemGrey),
+                ),
+                if (status != null &&
+                    status!.statusWithError.isNotEmpty &&
+                    status!.statusWithError.trim() != status!.status.trim())
+                  Text(
+                    status!.statusWithError,
+                    style: const TextStyle(
+                        fontSize: 12, color: CupertinoColors.systemOrange),
+                  ),
               ],
             ),
           ),
         ],
       ),
     );
+  }
+
+  static String _subtitle(DiningTableStatus? s, DiningTable t) {
+    final parts = <String>['${t.areaId} · ${t.layoutCode}'];
+    if (s != null) {
+      if (s.seatCapacity > 0) parts.add('${s.seatCapacity} seats');
+      if (s.sectionCode.isNotEmpty) parts.add(s.sectionCode);
+      if (s.shape.isNotEmpty) parts.add(s.shape);
+    }
+    return parts.join(' · ');
   }
 }
