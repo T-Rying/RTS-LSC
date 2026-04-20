@@ -392,6 +392,13 @@ class AdyenProvider implements PaymentProvider {
           },
           'SaleReferenceID': saleTransactionId,
         },
+        // PaymentData.PaymentType disambiguates the transaction flavour
+        // for the POI. "Normal" is the vanilla card-present sale; the
+        // Adyen Payments App returns UnavailableService without this
+        // because it has no default service wired.
+        'PaymentData': <String, dynamic>{
+          'PaymentType': 'Normal',
+        },
         'PaymentTransaction': <String, dynamic>{
           'AmountsReq': <String, dynamic>{
             'Currency': currency,
@@ -560,6 +567,13 @@ class AdyenProvider implements PaymentProvider {
         'paymentResponseKeys=${keys.join(",")}');
     if (additional != null && additional.isNotEmpty) {
       _log.info('Adyen NEXO AdditionalResponse: $additional');
+    }
+    // POIData carries the terminal's self-description — especially
+    // useful when errorCondition is UnavailableService, because it
+    // shows what the POI thinks it CAN do. Dump it verbatim (no PII).
+    final poiData = pr['POIData'];
+    if (poiData != null) {
+      _log.info('Adyen NEXO POIData: ${jsonEncode(poiData)}');
     }
 
     final paymentResult = pr['PaymentResult'] as Map<String, dynamic>?;
