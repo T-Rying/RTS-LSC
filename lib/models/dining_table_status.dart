@@ -16,6 +16,10 @@ class DiningTableStatus {
   final int maxCapacity;
   final String statusWithError;
 
+  /// OData row etag (`@odata.etag`) used as `If-Match` when PATCHing
+  /// this row. Empty if the endpoint didn't return one.
+  final String etag;
+
   const DiningTableStatus({
     required this.areaId,
     required this.tableNo,
@@ -27,7 +31,10 @@ class DiningTableStatus {
     required this.minCapacity,
     required this.maxCapacity,
     required this.statusWithError,
+    required this.etag,
   });
+
+  bool get isFree => status.trim().toLowerCase() == 'free';
 
   factory DiningTableStatus.fromJson(Map<String, dynamic> j) =>
       DiningTableStatus(
@@ -41,6 +48,7 @@ class DiningTableStatus {
         minCapacity: (j['Min_Capacity'] as num?)?.toInt() ?? 0,
         maxCapacity: (j['Max_Capacity'] as num?)?.toInt() ?? 0,
         statusWithError: (j['StatusWithError'] as String? ?? '').trim(),
+        etag: j['@odata.etag'] as String? ?? '',
       );
 
   /// Stable lookup key used when joining with `DiningTableLayout` rows.

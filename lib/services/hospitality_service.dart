@@ -228,4 +228,60 @@ class HospitalityService {
       "$_bcSaasBaseUrl/$tenant/$env/ODataV4/Company('$company')/$entitySet",
     );
   }
+
+  /// Single-row URL for a `DiningTables` key pair — encoded for use as
+  /// the target of an OData V4 `PATCH`. Single quotes inside the area
+  /// ID are doubled per OData literal rules, then percent-encoded.
+  Uri _diningTableRowEndpoint(
+      EnvironmentConfig config, String areaId, int tableNo) {
+    final base = _endpoint(config, 'DiningTables');
+    final literal = Uri.encodeComponent(areaId.replaceAll("'", "''"));
+    return Uri.parse(
+      "$base(Dining_Area_ID='$literal',Dining_Table_No=$tableNo)",
+    );
+  }
+
+  /// PATCHes the `Dining_Table_Status` field on a single row of the
+  /// `DiningTables` page web service. Uses the row's `@odata.etag` as
+  /// `If-Match` so we fail fast if another client has already changed
+  /// the row.
+  ///
+  /// Throws when the page rejects the write — most commonly because the
+  /// stock LS Central `Dining Tables` page has `Dining_Table_Status` as
+  /// `Editable = false`. In that case the caller should surface the
+  /// error as-is rather than retry.
+  Future<void> updateTableStatus(
+    EnvironmentConfig config, {
+    required String areaId,
+    required int tableNo,
+    required String etag,
+    required String newStatus,
+  }) async {
+    if (config.type != ConnectionType.saas) {
+      throw StateError('Hospitality updates require a SaaS connection');
+    }
+    final token = await _auth.getAccessToken(config);
+    final url = _diningTableRowEndpoint(config, areaId, tableNo);
+    _log.info('HospitalityService: PATCH $url → $newStatus');
+    final response = await http.patch(
+      url,
+      headers: {
+        'Authorization': 'Bearer $token',
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'If-Match': etag.isEmpty ? '*' : etag,
+      },
+      body: jsonEncode({'Dining_Table_Status': newStatus}),
+    );
+    if (response.statusCode == 200 || response.statusCode == 204) {
+      _log.info(
+          'HospitalityService: PATCH DiningTables OK (${response.statusCode})');
+      return;
+    }
+    _log.error(
+        'HospitalityService: PATCH DiningTables failed (${response.statusCode}): ${response.body}');
+    throw HttpException(
+      'PATCH DiningTables failed (${response.statusCode}): ${response.body}',
+    );
+  }
 }

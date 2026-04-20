@@ -117,8 +117,14 @@ class _HospitalityPageState extends State<HospitalityPage> {
   String? _restaurant;
   HospitalityType? _type;
   bool _loading = true;
+  bool _updatingStatus = false;
   String? _error;
   DiningTable? _tappedTable;
+
+  /// Targets we offer from a Free table. Kept deliberately small —
+  /// the stock LS Central `Dining Tables` page may reject values that
+  /// aren't in its Option enum.
+  static const List<String> _statusTargets = ['Occupied', 'Reserved'];
 
   /// Restaurant_No → real store name, sourced from the locally
   /// replicated Store buffer (`ReplicationStore(prefs, 'stores')`).
@@ -253,7 +259,14 @@ class _HospitalityPageState extends State<HospitalityPage> {
           child: _canvasArea(type, tables, layout),
         ),
         if (_tappedTable != null)
-          _TableDetails(table: _tappedTable!, status: tappedStatus),
+          _TableDetails(
+            table: _tappedTable!,
+            status: tappedStatus,
+            busy: _updatingStatus,
+            onChangeStatus: (tappedStatus != null && tappedStatus.isFree)
+                ? () => _changeStatus(_tappedTable!, tappedStatus)
+                : null,
+          ),
       ],
     );
   }
@@ -339,6 +352,64 @@ class _HospitalityPageState extends State<HospitalityPage> {
       _type = types.isNotEmpty ? types.first : null;
       _tappedTable = null;
     });
+  }
+
+  Future<void> _changeStatus(DiningTable table, DiningTableStatus status) async {
+    if (_updatingStatus) return;
+    if (!status.isFree) return;
+    final picked = await showCupertinoModalPopup<String>(
+      context: context,
+      builder: (ctx) => CupertinoActionSheet(
+        title: Text('Change table ${table.tableNo}'),
+        message: const Text('Only free tables can be changed from the app.'),
+        actions: [
+          for (final target in _statusTargets)
+            CupertinoActionSheetAction(
+              onPressed: () => Navigator.pop(ctx, target),
+              child: Text(target),
+            ),
+        ],
+        cancelButton: CupertinoActionSheetAction(
+          onPressed: () => Navigator.pop(ctx),
+          child: const Text('Cancel'),
+        ),
+      ),
+    );
+    if (picked == null || !mounted) return;
+    setState(() => _updatingStatus = true);
+    try {
+      await _service.updateTableStatus(
+        widget.config,
+        areaId: status.areaId,
+        tableNo: status.tableNo,
+        etag: status.etag,
+        newStatus: picked,
+      );
+      if (!mounted) return;
+      await _load();
+    } catch (e) {
+      _log.error('Hospitality: status change failed: $e');
+      if (!mounted) return;
+      setState(() => _updatingStatus = false);
+      await showCupertinoDialog<void>(
+        context: context,
+        builder: (ctx) => CupertinoAlertDialog(
+          title: const Text("Couldn't change status"),
+          content: Text(
+            '$e\n\n'
+            'The standard Dining Tables page may have the status field '
+            'marked as read-only. In that case a page extension or a '
+            'codeunit wrapper is needed to change status from the app.',
+          ),
+          actions: [
+            CupertinoDialogAction(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('OK'),
+            ),
+          ],
+        ),
+      );
+    }
   }
 
   Future<void> _pickType() async {
@@ -737,8 +808,15 @@ class _TableTile extends StatelessWidget {
 class _TableDetails extends StatelessWidget {
   final DiningTable table;
   final DiningTableStatus? status;
+  final bool busy;
+  final VoidCallback? onChangeStatus;
 
-  const _TableDetails({required this.table, required this.status});
+  const _TableDetails({
+    required this.table,
+    required this.status,
+    required this.busy,
+    required this.onChangeStatus,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -809,6 +887,21 @@ class _TableDetails extends StatelessWidget {
               ],
             ),
           ),
+          if (busy)
+            const Padding(
+              padding: EdgeInsets.only(left: 8),
+              child: CupertinoActivityIndicator(),
+            )
+          else if (onChangeStatus != null)
+            CupertinoButton(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              color: _primaryColor,
+              onPressed: onChangeStatus,
+              child: const Text(
+                'Change status',
+                style: TextStyle(fontSize: 13, color: CupertinoColors.white),
+              ),
+            ),
         ],
       ),
     );
