@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/cupertino.dart';
@@ -121,6 +122,13 @@ class _HospitalityPageState extends State<HospitalityPage> {
   String? _error;
   DiningTable? _tappedTable;
 
+  /// Silent background refresh of `DiningTables`. Not shown in the UI
+  /// (no spinner, no error banner) so it doesn't disturb the user
+  /// while they're looking at a table.
+  Timer? _statusTimer;
+  bool _statusRefreshInFlight = false;
+  static const Duration _statusInterval = Duration(seconds: 10);
+
   /// Targets we offer from a Free table. Must match the LS Central
   /// `Dining_Table_Status` option enum exactly — BC rejects unknown
   /// values with `Application_InvalidOptionEnumValue`. The stock
@@ -141,7 +149,14 @@ class _HospitalityPageState extends State<HospitalityPage> {
     _load();
   }
 
+  @override
+  void dispose() {
+    _statusTimer?.cancel();
+    super.dispose();
+  }
+
   Future<void> _load() async {
+    _statusTimer?.cancel();
     setState(() {
       _loading = true;
       _error = null;
@@ -149,12 +164,18 @@ class _HospitalityPageState extends State<HospitalityPage> {
     try {
       final prefs = await SharedPreferences.getInstance();
       final storeNames = _readStoreNames(prefs);
-      final layout = await _service.fetchLayout(widget.config);
+      final layout = await _service.fetchStaticLayout(widget.config);
       if (!mounted) return;
       _layout = layout;
       _storeNames = storeNames;
       _selectInitialFilters();
       setState(() => _loading = false);
+      // Fire a status refresh right away, then poll on an interval.
+      // Both run unawaited so the floor plan is visible the moment the
+      // static layout arrives.
+      unawaited(_refreshStatuses());
+      _statusTimer = Timer.periodic(
+          _statusInterval, (_) => unawaited(_refreshStatuses()));
     } catch (e) {
       _log.error('Hospitality: fetch failed: $e');
       if (!mounted) return;
@@ -162,6 +183,28 @@ class _HospitalityPageState extends State<HospitalityPage> {
         _error = e.toString();
         _loading = false;
       });
+    }
+  }
+
+  /// Silent refresh of the live `DiningTables` feed. Keeps the current
+  /// layout's static data intact and only swaps in the new status map.
+  /// Errors are logged and swallowed so a flaky network tick doesn't
+  /// pop a dialog — the user keeps seeing the last-known colors.
+  Future<void> _refreshStatuses() async {
+    if (_statusRefreshInFlight) return;
+    final current = _layout;
+    if (current == null) return;
+    _statusRefreshInFlight = true;
+    try {
+      final statuses = await _service.fetchTableStatuses(widget.config);
+      if (!mounted || _layout == null) return;
+      setState(() {
+        _layout = _layout!.withStatuses(statuses);
+      });
+    } catch (e) {
+      _log.error('Hospitality: background status refresh failed: $e');
+    } finally {
+      _statusRefreshInFlight = false;
     }
   }
 
@@ -389,7 +432,9 @@ class _HospitalityPageState extends State<HospitalityPage> {
         newStatus: picked,
       );
       if (!mounted) return;
-      await _load();
+      await _refreshStatuses();
+      if (!mounted) return;
+      setState(() => _updatingStatus = false);
     } catch (e) {
       _log.error('Hospitality: status change failed: $e');
       if (!mounted) return;

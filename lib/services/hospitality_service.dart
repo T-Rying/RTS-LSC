@@ -10,15 +10,22 @@ import '../models/hospitality_type.dart';
 import 'auth_service.dart';
 import 'log_service.dart';
 
-/// Bundled result of fetching the four Hospitality OData entities:
+/// Bundled result of fetching the Hospitality OData entities.
+///
+/// The first three are design-time data (rarely change) and are loaded
+/// once via `fetchStaticLayout`:
 /// * `HospitalityTypes` — Restaurant_No × Sales_Type configuration rows
 /// * `DiningAreaLayout` — per-area metadata (capacity, counts, grid size)
 /// * `DiningTableLayout` — per-table design-space rectangles
-/// * `DiningTables` — live per-table status (Free / Occupied / Dirty / …),
-///   capacity and shape; joined back to the layout rows by
-///   `(Dining_Area_ID, Dining_Table_No)`.
 ///
-/// All four are requested in parallel with the same OAuth bearer token.
+/// The fourth is live data, polled in the background via
+/// `fetchTableStatuses` and merged in through `withStatuses`:
+/// * `DiningTables` — live per-table status (Free / Seated / Occupied /
+///   To Be Cleaned), capacity and shape. Joined back to the layout
+///   rows by `(Dining_Area_ID, Dining_Table_No)`.
+///
+/// `statusByKey` may be empty on first render — the UI degrades to a
+/// neutral "Unknown" color until the first background poll lands.
 class HospitalityLayout {
   final List<HospitalityType> types;
   final List<DiningAreaLayout> areaLayouts;
@@ -33,10 +40,21 @@ class HospitalityLayout {
   });
 
   /// Returns the live status row for a drawn table, or `null` when the
-  /// `DiningTables` endpoint has no matching entry (e.g. the table
-  /// exists in the layout but isn't configured for service).
+  /// `DiningTables` endpoint has no matching entry (table exists in
+  /// the layout but isn't configured for service) or the first poll
+  /// hasn't landed yet.
   DiningTableStatus? statusFor(String areaId, int tableNo) =>
       statusByKey[DiningTableStatus.keyFor(areaId, tableNo)];
+
+  /// Returns a copy with a new live-status map. Called by the page's
+  /// background poller after each `DiningTables` refresh.
+  HospitalityLayout withStatuses(Map<String, DiningTableStatus> next) =>
+      HospitalityLayout(
+        types: types,
+        areaLayouts: areaLayouts,
+        tables: tables,
+        statusByKey: next,
+      );
 
   /// Only the types this page can actually draw — `Graphical Dining
   /// Tables` and `Dining Table Grid`. Everything else (KOT List,
@@ -113,7 +131,12 @@ class HospitalityService {
 
   HospitalityService({AuthService? auth}) : _auth = auth ?? AuthService.instance;
 
-  Future<HospitalityLayout> fetchLayout(EnvironmentConfig config) async {
+  /// Fetches the three design-time entities (types + area layouts +
+  /// table layouts) in parallel and returns a layout with an empty
+  /// status map. Callers are expected to immediately kick off
+  /// `fetchTableStatuses` and then merge the result in with
+  /// `HospitalityLayout.withStatuses`.
+  Future<HospitalityLayout> fetchStaticLayout(EnvironmentConfig config) async {
     if (config.type != ConnectionType.saas) {
       throw StateError('Hospitality currently supports SaaS connections only');
     }
@@ -122,15 +145,27 @@ class HospitalityService {
       _fetchTypes(config, token),
       _fetchAreaLayouts(config, token),
       _fetchTables(config, token),
-      _fetchTableStatuses(config, token),
     ]);
-    final statuses = results[3] as List<DiningTableStatus>;
     return HospitalityLayout(
       types: results[0] as List<HospitalityType>,
       areaLayouts: results[1] as List<DiningAreaLayout>,
       tables: results[2] as List<DiningTable>,
-      statusByKey: {for (final s in statuses) s.key: s},
+      statusByKey: const {},
     );
+  }
+
+  /// Fetches the live `DiningTables` feed and returns it keyed by
+  /// `(areaId, tableNo)` so callers can drop it straight into
+  /// `HospitalityLayout.withStatuses`. Safe to call on a background
+  /// timer — the caller decides how to react to errors.
+  Future<Map<String, DiningTableStatus>> fetchTableStatuses(
+      EnvironmentConfig config) async {
+    if (config.type != ConnectionType.saas) {
+      throw StateError('Hospitality currently supports SaaS connections only');
+    }
+    final token = await _auth.getAccessToken(config);
+    final list = await _fetchTableStatuses(config, token);
+    return {for (final s in list) s.key: s};
   }
 
   Future<List<HospitalityType>> _fetchTypes(EnvironmentConfig config, String token) async {
