@@ -210,7 +210,7 @@ class AdyenProvider implements PaymentProvider {
           'for a boardingToken. Fill in the API key in Settings → Adyen.');
     }
 
-    final boardingToken = await _exchangeBoardingToken();
+    final boardingToken = _toBase64Url(await _exchangeBoardingToken());
 
     final url = Uri.parse('$_appLinkBase/board').replace(queryParameters: {
       'returnUrl': AdyenAppLinkService.returnUrl,
@@ -237,6 +237,16 @@ class AdyenProvider implements PaymentProvider {
     }
     return _isBoarded;
   }
+
+  /// Converts a standard-Base64 string to Base64URL — swaps `+` → `-`,
+  /// `/` → `_`, strips trailing `=` padding. Idempotent on strings that
+  /// are already Base64URL. The Payments App API returns the
+  /// boardingToken as standard Base64, but the `/board` App Link's
+  /// query parser wants Base64URL (error 02_005 if you don't convert).
+  String _toBase64Url(String b64) => b64
+      .replaceAll('+', '-')
+      .replaceAll('/', '_')
+      .replaceAll('=', '');
 
   /// POSTs the cached `boardingRequestToken` to the Management API and
   /// returns the short-lived `boardingToken`.
