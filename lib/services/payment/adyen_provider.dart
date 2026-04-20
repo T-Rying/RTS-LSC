@@ -211,9 +211,17 @@ class AdyenProvider implements PaymentProvider {
     }
 
     final rawToken = await _exchangeBoardingToken();
-    final boardingToken = _toBase64Url(rawToken);
+    // The Payments App API returns `boardingToken` as a JWT string
+    // (e.g. `eyJhbGciOi…`). The /board App Link expects that whole
+    // string to be Base64URL-encoded a second time — the docs show
+    // an example URL whose boardingToken starts with `ZXlK…`, i.e.
+    // the Base64URL of `eyJ…`. Encoding the UTF-8 bytes of the JWT
+    // and stripping padding matches that shape. Error 02_005 is what
+    // you get if you pass the raw JWT through instead.
+    final boardingToken =
+        base64Url.encode(utf8.encode(rawToken)).replaceAll('=', '');
     _logTokenShape('raw', rawToken);
-    _logTokenShape('base64url', boardingToken);
+    _logTokenShape('wrapped', boardingToken);
 
     // Build the /board URL by string concatenation to avoid any
     // re-encoding of an already-Base64URL token. Dart's Uri.replace
@@ -247,16 +255,6 @@ class AdyenProvider implements PaymentProvider {
     }
     return _isBoarded;
   }
-
-  /// Converts a standard-Base64 string to Base64URL — swaps `+` → `-`,
-  /// `/` → `_`, strips trailing `=` padding. Idempotent on strings that
-  /// are already Base64URL. The Payments App API returns the
-  /// boardingToken as standard Base64, but the `/board` App Link's
-  /// query parser wants Base64URL (error 02_005 if you don't convert).
-  String _toBase64Url(String b64) => b64
-      .replaceAll('+', '-')
-      .replaceAll('/', '_')
-      .replaceAll('=', '');
 
   /// Logs metadata about a token (length, dot count, char class
   /// counts, first/last few chars) without dumping the whole value.
