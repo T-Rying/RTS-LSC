@@ -400,26 +400,49 @@ class _SettingsPageState extends State<SettingsPage> {
                 ],
               ),
               const SizedBox(height: 12),
+              const SizedBox(height: 4),
+              const Text('Account',
+                  style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: CupertinoColors.systemGrey)),
               _Field(controller: merchantController, placeholder: 'Merchant account'),
               _Field(controller: apiKeyController, placeholder: 'API key', obscure: true),
-              _Field(controller: sharedKeyController, placeholder: 'Shared encryption key', obscure: true),
               _Field(controller: storeIdController, placeholder: 'Store ID'),
               _Field(controller: terminalIdController, placeholder: 'Terminal ID (POI ID)'),
-              const SizedBox(height: 8),
-              const Text('NEXO / Phase C',
+              const SizedBox(height: 10),
+              const Text('NEXO shared secret (Phase C)',
+                  style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: CupertinoColors.systemGrey)),
+              const Text(
+                  'From Customer Area → In-person payments → Terminal API keys '
+                  '→ your shared secret. All three are needed for /nexo '
+                  'transactions.',
+                  style: TextStyle(
+                      fontSize: 11,
+                      color: CupertinoColors.systemGrey)),
+              const SizedBox(height: 4),
+              _Field(
+                  controller: sharedKeyController,
+                  placeholder: 'Passphrase (shared secret value)',
+                  obscure: true),
+              _Field(
+                  controller: keyIdentifierController,
+                  placeholder: 'Key identifier (e.g. "this")'),
+              _Field(
+                  controller: keyVersionController,
+                  placeholder: 'Key version (number)'),
+              const SizedBox(height: 10),
+              const Text('POS identity',
                   style: TextStyle(
                       fontSize: 12,
                       fontWeight: FontWeight.w600,
                       color: CupertinoColors.systemGrey)),
               _Field(
-                  controller: keyIdentifierController,
-                  placeholder: 'Key identifier (shared secret)'),
-              _Field(
-                  controller: keyVersionController,
-                  placeholder: 'Key version (number)'),
-              _Field(
                   controller: saleIdController,
-                  placeholder: 'Sale system ID'),
+                  placeholder: 'Sale system ID (default RTS-LSC)'),
             ],
           ),
         ),
