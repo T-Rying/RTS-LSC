@@ -319,45 +319,52 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
      * [callback] is invoked with the JSON response string when done.
      */
     fun processRequest(type: String, jsonData: String, callback: (String) -> Unit) {
-        val c = client
-        if (c == null) {
-            callback("""{"ResultCode":"Error","Message":"SoftPay not initialized"}""")
-            return
-        }
-
         try {
             val json = org.json.JSONObject(jsonData)
             val command = json.optString("Command", type)
 
+            // Session lifecycle + last-transaction lookups don't need the
+            // SoftPay client. Handle them first so that a non-SoftPay
+            // setup (Adyen, etc.) still gets clean responses for these.
             when (command) {
                 "StartSession" -> {
                     callback("""{"SessionResponse":"StartingSessionSuccessful"}""")
+                    return
                 }
                 "FinishSession" -> {
                     callback("{}")
+                    return
                 }
                 "CloseAddIn" -> {
                     callback("{}")
+                    return
                 }
                 "GetLastTransaction" -> {
                     val txn = lastTransactionJson
                     callback(txn ?: """{"ResultCode":"Error","Message":"No previous transaction"}""")
+                    return
                 }
-                "Purchase", "PreAuth", "FinalizePreAuth" -> {
-                    if (!dispatchToActiveProvider(command, json, callback)) {
-                        processPayment(c, json, callback)
-                    }
-                }
-                "Refund" -> {
-                    if (!dispatchToActiveProvider(command, json, callback)) {
-                        processRefund(c, json, callback)
-                    }
-                }
-                else -> {
-                    if (!dispatchToActiveProvider(command, json, callback)) {
-                        processPayment(c, json, callback)
-                    }
-                }
+            }
+
+            // Payment-bearing commands: route via provider-aware dispatcher
+            // first (Adyen path lives entirely in Dart). Only fall through
+            // to the SoftPay path when the dispatcher explicitly declines
+            // AND we have a SoftPay client ready.
+            val handled = when (command) {
+                "Purchase", "PreAuth", "FinalizePreAuth", "Refund" ->
+                    dispatchToActiveProvider(command, json, callback)
+                else -> dispatchToActiveProvider(command, json, callback)
+            }
+            if (handled) return
+
+            val c = client
+            if (c == null) {
+                callback("""{"ResultCode":"Error","Message":"SoftPay not initialized"}""")
+                return
+            }
+            when (command) {
+                "Refund" -> processRefund(c, json, callback)
+                else -> processPayment(c, json, callback)
             }
         } catch (e: Exception) {
             Log.e(TAG, "processRequest error", e)
