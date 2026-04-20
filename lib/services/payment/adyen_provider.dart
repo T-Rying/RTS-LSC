@@ -234,16 +234,42 @@ class AdyenProvider implements PaymentProvider {
   }
 
   /// POSTs the cached `boardingRequestToken` to the Management API and
-  /// returns the short-lived `boardingToken`. Scoped to the store when
-  /// `adyenStoreId` is set (the Adyen Payments app expects store-level
-  /// pairing for POS installs).
+  /// returns the short-lived `boardingToken`.
+  ///
+  /// When `adyenStoreId` is set we first try the store-scoped endpoint
+  /// `/merchants/{id}/stores/{storeId}/…`. That path wants Adyen's
+  /// **internal** store reference (format like `ST322LJ22UR…`) — not
+  /// the merchant-defined store code. If the user typed a store code
+  /// it 404s, so we transparently fall back to the merchant-level
+  /// endpoint `/merchants/{id}/…`, which is the right shape for
+  /// merchant-wide Payments app boarding.
   Future<String> _exchangeBoardingToken() async {
     final merchantId = Uri.encodeComponent(config.adyenMerchantAccount);
     final storeId = config.adyenStoreId;
-    final path = storeId.isEmpty
-        ? '/merchants/$merchantId/generatePaymentsAppBoardingToken'
-        : '/merchants/$merchantId/stores/${Uri.encodeComponent(storeId)}'
-            '/generatePaymentsAppBoardingToken';
+    final merchantPath =
+        '/merchants/$merchantId/generatePaymentsAppBoardingToken';
+
+    if (storeId.isNotEmpty) {
+      final storePath = '/merchants/$merchantId/stores/'
+          '${Uri.encodeComponent(storeId)}/generatePaymentsAppBoardingToken';
+      final storeResult = await _postExchange(storePath);
+      if (storeResult != null) return storeResult;
+      _log.warn('Adyen: store-level exchange returned 404 — falling back '
+          'to merchant-level. The Management API expects Adyen\'s internal '
+          'store reference (ST…) here, not the merchant-defined store code.');
+    }
+    final merchantResult = await _postExchange(merchantPath);
+    if (merchantResult != null) return merchantResult;
+    throw StateError(
+        'Management API rejected the boardingRequestToken at both '
+        'store-level and merchant-level paths. See logs for the HTTP '
+        'response body.');
+  }
+
+  /// Single POST attempt at [path]. Returns the boardingToken on
+  /// success, or null if the endpoint returned 404 (letting the caller
+  /// try a fallback path). Throws [StateError] on any other failure.
+  Future<String?> _postExchange(String path) async {
     final url = Uri.parse('$_managementApiBase$path');
     _log.info('Adyen: POST $url (exchange boardingRequestToken)');
 
@@ -256,6 +282,10 @@ class AdyenProvider implements PaymentProvider {
       },
       body: jsonEncode({'boardingRequestToken': _lastBoardingRequestToken}),
     );
+    if (response.statusCode == 404) {
+      _log.warn('Adyen: boardingToken exchange 404 at $path');
+      return null;
+    }
     if (response.statusCode != 200 && response.statusCode != 201) {
       _log.error('Adyen: boardingToken exchange failed '
           '(${response.statusCode}): ${response.body}');
@@ -276,7 +306,7 @@ class AdyenProvider implements PaymentProvider {
     if (installation != null && installation.isNotEmpty) {
       _installationId = installation;
     }
-    _log.info('Adyen: received boardingToken (1h TTL) from Management API');
+    _log.info('Adyen: received boardingToken (1h TTL) from $path');
     return token;
   }
 
