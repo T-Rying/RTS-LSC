@@ -346,6 +346,14 @@ class _SettingsPageState extends State<SettingsPage> {
         TextEditingController(text: _connection?.adyenStoreId ?? '');
     final terminalIdController =
         TextEditingController(text: _connection?.adyenTerminalId ?? '');
+    final keyIdentifierController =
+        TextEditingController(text: _connection?.adyenKeyIdentifier ?? '');
+    final keyVersionController = TextEditingController(
+        text: (_connection?.adyenKeyVersion ?? 0) > 0
+            ? '${_connection!.adyenKeyVersion}'
+            : '');
+    final saleIdController =
+        TextEditingController(text: _connection?.adyenSaleId ?? 'RTS-LSC');
     var testMode = _connection?.adyenTestMode ?? true;
 
     showCupertinoModalPopup(
@@ -360,6 +368,13 @@ class _SettingsPageState extends State<SettingsPage> {
             _connection!.adyenSharedKey = sharedKeyController.text.trim();
             _connection!.adyenStoreId = storeIdController.text.trim();
             _connection!.adyenTerminalId = terminalIdController.text.trim();
+            _connection!.adyenKeyIdentifier =
+                keyIdentifierController.text.trim();
+            _connection!.adyenKeyVersion =
+                int.tryParse(keyVersionController.text.trim()) ?? 0;
+            final enteredSaleId = saleIdController.text.trim();
+            _connection!.adyenSaleId =
+                enteredSaleId.isEmpty ? 'RTS-LSC' : enteredSaleId;
             _connection!.adyenTestMode = testMode;
             await widget.envService.saveConnection(_connection!);
             setState(() {});
@@ -390,6 +405,21 @@ class _SettingsPageState extends State<SettingsPage> {
               _Field(controller: sharedKeyController, placeholder: 'Shared encryption key', obscure: true),
               _Field(controller: storeIdController, placeholder: 'Store ID'),
               _Field(controller: terminalIdController, placeholder: 'Terminal ID (POI ID)'),
+              const SizedBox(height: 8),
+              const Text('NEXO / Phase C',
+                  style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: CupertinoColors.systemGrey)),
+              _Field(
+                  controller: keyIdentifierController,
+                  placeholder: 'Key identifier (shared secret)'),
+              _Field(
+                  controller: keyVersionController,
+                  placeholder: 'Key version (number)'),
+              _Field(
+                  controller: saleIdController,
+                  placeholder: 'Sale system ID'),
             ],
           ),
         ),

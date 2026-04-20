@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -7,17 +8,21 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../models/environment_config.dart';
 import '../log_service.dart';
 import 'adyen_app_link_service.dart';
+import 'adyen_nexo.dart';
+import 'adyen_nexo_crypto.dart';
 import 'payment_provider.dart';
 import 'payment_result.dart';
 
-/// Phase B implementation. Runs the Adyen Android Payments app `/boarded`
-/// App Link probe to discover whether the device has been paired with a
-/// merchant account yet. Cached `installationId` persists across restarts
-/// so the probe is cheap to re-run.
+/// Adyen Payments-app integration across all three phases:
 ///
-/// Transaction operations (purchase/refund/cancel) still return a Phase-B
-/// stub error — those land in Phase C once Terminal API encryption is wired
-/// up.
+/// * Phase A: credential model + provider abstraction.
+/// * Phase B: `/boarded` probe + `/board` completion via the Adyen
+///   Management API exchange. Yields the installationId we use as
+///   POIID in Terminal API messages.
+/// * Phase C: NEXO Terminal API over the `/nexo` App Link. Inner JSON
+///   is AES-256-CBC-encrypted and HMAC-SHA256-signed with keys derived
+///   from `adyenSharedKey` (the shared passphrase set up in Adyen CA
+///   → Point-of-sale → Shared secret).
 ///
 /// See the Adyen Android Payments app docs at
 /// https://docs.adyen.com/point-of-sale/mobile-android/build/payments-app
@@ -371,20 +376,60 @@ class AdyenProvider implements PaymentProvider {
     required String currency,
     String? posReferenceNumber,
   }) async {
-    _log.warn('Adyen.purchase called — not implemented yet (Phase B stub, '
-        'waiting for Phase C). amount=$amount $currency ref=$posReferenceNumber');
-    if (!_isBoarded) {
-      return const PaymentResult.declined(
-        errorCode: 'ADYEN_NOT_BOARDED',
-        errorMessage: 'Adyen device is not boarded yet. '
-            'Run "Check boarding status" in Settings first.',
+    final precheck = _requirePhaseCReady('purchase');
+    if (precheck != null) return precheck;
+
+    final nexo = _buildNexo();
+    final serviceId = _newServiceId();
+    final saleTransactionId = posReferenceNumber ?? serviceId;
+    final transactionId = 'TX-$serviceId';
+    final inner = <String, dynamic>{
+      'PaymentRequest': <String, dynamic>{
+        'SaleData': <String, dynamic>{
+          'SaleTransactionID': <String, dynamic>{
+            'TransactionID': transactionId,
+            'TimeStamp': DateTime.now().toUtc().toIso8601String(),
+          },
+          'SaleReferenceID': saleTransactionId,
+        },
+        'PaymentTransaction': <String, dynamic>{
+          'AmountsReq': <String, dynamic>{
+            'Currency': currency,
+            'RequestedAmount': _minorToDecimal(amount, currency),
+          },
+        },
+      },
+    };
+
+    try {
+      final response = await nexo.roundTrip(
+        messageCategory: 'Payment',
+        serviceId: serviceId,
+        innerRequest: inner,
+      );
+      return _mapPaymentResponse(
+        response,
+        requestedAmount: amount,
+        currency: currency,
+        serviceId: serviceId,
+      );
+    } on TimeoutException {
+      _log.error('Adyen NEXO: purchase timed out ref=$posReferenceNumber');
+      return PaymentResult.declined(
+        errorCode: 'ADYEN_NEXO_TIMEOUT',
+        errorMessage:
+            'Adyen terminal did not respond in time. State of the payment '
+            'is unknown — check the Adyen Customer Area before retrying.',
+        transaction: PaymentTransaction(providerTransactionId: serviceId),
+      );
+    } catch (e) {
+      _log.error('Adyen NEXO: purchase failed: $e');
+      return PaymentResult.declined(
+        errorCode: 'ADYEN_NEXO_ERROR',
+        errorMessage: e.toString(),
+        transaction: PaymentTransaction(providerTransactionId: serviceId),
       );
     }
-    return const PaymentResult.declined(
-      errorCode: 'ADYEN_NOT_IMPLEMENTED',
-      errorMessage: 'Adyen purchase flow is not wired yet (Phase C pending). '
-          'Switch to SoftPay in Settings for now.',
-    );
   }
 
   @override
@@ -395,15 +440,154 @@ class AdyenProvider implements PaymentProvider {
   }) async =>
       const PaymentResult.declined(
         errorCode: 'ADYEN_NOT_IMPLEMENTED',
-        errorMessage: 'Adyen refund flow is not wired yet (Phase C pending).',
+        errorMessage: 'Adyen refund flow is not wired yet — the /nexo '
+            'round-trip is in place but refund mapping is TODO.',
       );
 
   @override
   Future<PaymentResult> cancel({String? providerTransactionId}) async =>
       const PaymentResult.declined(
         errorCode: 'ADYEN_NOT_IMPLEMENTED',
-        errorMessage: 'Adyen cancel flow is not wired yet (Phase C pending).',
+        errorMessage: 'Adyen cancel flow is not wired yet — the /nexo '
+            'round-trip is in place but reversal mapping is TODO.',
       );
+
+  /// Build a fresh NEXO channel wrapper for the current config.
+  /// Kept per-call (rather than cached) because the shared passphrase
+  /// or installationId can change at any time via Settings — and
+  /// PBKDF2 at 4000 rounds is cheap enough (~10ms).
+  AdyenNexo _buildNexo() => AdyenNexo(
+        crypto: AdyenNexoCrypto.fromPassphrase(config.adyenSharedKey),
+        appLinks: _appLinks,
+        appLinkBase: _appLinkBase,
+        keyIdentifier: config.adyenKeyIdentifier,
+        keyVersion: config.adyenKeyVersion,
+        saleId: config.adyenSaleId,
+        poiId: _installationId,
+      );
+
+  /// Validates that we have everything needed to encrypt + send a NEXO
+  /// request. Returns a declined [PaymentResult] on failure, or null
+  /// when ready to proceed.
+  PaymentResult? _requirePhaseCReady(String op) {
+    if (!_initialized) {
+      return PaymentResult.declined(
+        errorCode: 'ADYEN_NOT_INITIALIZED',
+        errorMessage: 'Adyen provider is not initialized — $op aborted.',
+      );
+    }
+    if (!_isBoarded || _installationId.isEmpty) {
+      return const PaymentResult.declined(
+        errorCode: 'ADYEN_NOT_BOARDED',
+        errorMessage: 'Adyen device is not boarded yet. '
+            'Run "Check boarding status" and "Pair" in Settings first.',
+      );
+    }
+    final missing = <String>[
+      if (config.adyenSharedKey.isEmpty) 'sharedKey (passphrase)',
+      if (config.adyenKeyIdentifier.isEmpty) 'keyIdentifier',
+      if (config.adyenKeyVersion <= 0) 'keyVersion',
+      if (config.adyenSaleId.isEmpty) 'saleId',
+    ];
+    if (missing.isNotEmpty) {
+      return PaymentResult.declined(
+        errorCode: 'ADYEN_CONFIG_INCOMPLETE',
+        errorMessage:
+            'Adyen Phase C config incomplete — missing: ${missing.join(", ")}. '
+            'Fill in the Adyen credentials in Settings.',
+      );
+    }
+    return null;
+  }
+
+  /// 10-digit numeric ServiceID — the NEXO protocol's per-request
+  /// identifier. Adyen echoes it back in the SaleToPOIResponse so we
+  /// can correlate; our round-trip helper rejects mismatched values.
+  String _newServiceId() {
+    final r = Random.secure();
+    final buf = StringBuffer();
+    for (var i = 0; i < 10; i++) {
+      buf.write(r.nextInt(10));
+    }
+    return buf.toString();
+  }
+
+  /// Convert minor-unit integers (3400 DKK cents) into the decimal
+  /// string NEXO expects in RequestedAmount. NEXO treats this as a
+  /// JSON number, but the JSON serializer will render 34 and 34.00
+  /// differently — we pass a `num` with the right exponent so Dart's
+  /// serializer keeps the fractional part when needed.
+  num _minorToDecimal(int minor, String currency) {
+    // Zero-decimal currencies (JPY, KRW, …) are rare but supported.
+    final zeroDecimal = {'JPY', 'KRW', 'CLP', 'VND'};
+    if (zeroDecimal.contains(currency.toUpperCase())) return minor;
+    return minor / 100.0;
+  }
+
+  /// Map a decrypted NEXO `PaymentResponse` onto our provider-neutral
+  /// [PaymentResult]. Extracts the ApprovedAmount, payment brand,
+  /// masked PAN and acquirer auth code when present; on decline pulls
+  /// the Response.ErrorCondition + AdditionalResponse text so the
+  /// cashier UI can show something actionable.
+  PaymentResult _mapPaymentResponse(
+    Map<String, dynamic> response, {
+    required int requestedAmount,
+    required String currency,
+    required String serviceId,
+  }) {
+    final pr = response['PaymentResponse'] as Map<String, dynamic>?;
+    if (pr == null) {
+      return PaymentResult.declined(
+        errorCode: 'ADYEN_BAD_RESPONSE',
+        errorMessage: 'NEXO response missing PaymentResponse: '
+            '${response.keys.join(",")}',
+        transaction: PaymentTransaction(providerTransactionId: serviceId),
+      );
+    }
+    final resp = pr['Response'] as Map<String, dynamic>? ?? const {};
+    final result = (resp['Result'] as String? ?? '').toLowerCase();
+    final errorCondition = resp['ErrorCondition'] as String?;
+    final additional = resp['AdditionalResponse'] as String?;
+
+    final paymentResult = pr['PaymentResult'] as Map<String, dynamic>?;
+    final amountsResp =
+        paymentResult?['AmountsResp'] as Map<String, dynamic>?;
+    final approved = amountsResp?['AuthorizedAmount'];
+    final approvedMinor = approved is num
+        ? (approved * 100).round()
+        : requestedAmount;
+
+    final instrument = paymentResult?['PaymentInstrumentData']
+        as Map<String, dynamic>?;
+    final cardData = instrument?['CardData'] as Map<String, dynamic>?;
+    final maskedPan = cardData?['MaskedPan'] as String?;
+    final brand = cardData?['PaymentBrand'] as String?;
+
+    final acquirerData = paymentResult?['PaymentAcquirerData']
+        as Map<String, dynamic>?;
+    final authCode = (acquirerData?['AcquirerTransactionID']
+            as Map<String, dynamic>?)?['TransactionID'] as String? ??
+        acquirerData?['ApprovalCode'] as String?;
+
+    final txn = PaymentTransaction(
+      providerTransactionId: serviceId,
+      authorizationCode: authCode,
+      cardScheme: brand,
+      cardToken: maskedPan,
+      state: result,
+      amountMinor: approvedMinor,
+      currencyCode: currency,
+    );
+
+    if (result == 'success') return PaymentResult.approved(txn);
+
+    return PaymentResult.declined(
+      errorCode: errorCondition ?? 'ADYEN_DECLINED',
+      errorMessage: additional ?? 'Adyen payment not approved ($result)',
+      supportCode: additional,
+      transaction: txn,
+    );
+  }
 
   @override
   Future<void> dispose() async {

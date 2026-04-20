@@ -42,6 +42,18 @@ class EnvironmentConfig {
   String adyenSharedKey;
   String adyenStoreId;
   String adyenTerminalId;
+  // NEXO encryption key metadata — both are set in Adyen Customer Area
+  // when configuring the POS shared secret. The mobile app just echoes
+  // them back in every SaleToPOIRequest.SecurityTrailer so Adyen knows
+  // which secret we used. Empty `adyenKeyIdentifier` means Phase C
+  // isn't configured yet; the POS page will refuse to run purchases
+  // rather than silently sending malformed requests.
+  String adyenKeyIdentifier;
+  int adyenKeyVersion;
+  // Sale-system ID we send as `SaleID` in NEXO message headers —
+  // identifies this POS app (not a store). Free-form but must match
+  // whatever Adyen has whitelisted for the merchant account.
+  String adyenSaleId;
   // true = sandbox (use https://www.adyen.com/test/...); false = production.
   bool adyenTestMode;
 
@@ -67,6 +79,9 @@ class EnvironmentConfig {
     this.adyenSharedKey = '',
     this.adyenStoreId = '',
     this.adyenTerminalId = '',
+    this.adyenKeyIdentifier = '',
+    this.adyenKeyVersion = 0,
+    this.adyenSaleId = 'RTS-LSC',
     this.adyenTestMode = true,
   });
 
@@ -99,6 +114,9 @@ class EnvironmentConfig {
         'adyenSharedKey': adyenSharedKey,
         'adyenStoreId': adyenStoreId,
         'adyenTerminalId': adyenTerminalId,
+        'adyenKeyIdentifier': adyenKeyIdentifier,
+        'adyenKeyVersion': adyenKeyVersion,
+        'adyenSaleId': adyenSaleId,
         'adyenTestMode': adyenTestMode,
       };
 
@@ -139,6 +157,9 @@ class EnvironmentConfig {
       adyenSharedKey: json['adyenSharedKey'] as String? ?? '',
       adyenStoreId: json['adyenStoreId'] as String? ?? '',
       adyenTerminalId: json['adyenTerminalId'] as String? ?? '',
+      adyenKeyIdentifier: json['adyenKeyIdentifier'] as String? ?? '',
+      adyenKeyVersion: (json['adyenKeyVersion'] as num?)?.toInt() ?? 0,
+      adyenSaleId: json['adyenSaleId'] as String? ?? 'RTS-LSC',
       adyenTestMode: json['adyenTestMode'] as bool? ?? true,
     );
   }

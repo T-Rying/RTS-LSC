@@ -47,6 +47,9 @@ dependencies:
   # The Adyen Payments app launches our app via an HTTPS return URL after processing
   # /boarded, /board, and /nexo App Links — app_links lets us receive it.
   app_links: ^6.3.2
+  # Crypto primitives for the Adyen NEXO Terminal API encryption:
+  # PBKDF2-HMAC-SHA1 key derivation, AES-256-CBC, HMAC-SHA256. Phase C.
+  pointycastle: ^3.9.1
 
 dev_dependencies:
   flutter_test:
