@@ -121,10 +121,13 @@ class _HospitalityPageState extends State<HospitalityPage> {
   String? _error;
   DiningTable? _tappedTable;
 
-  /// Targets we offer from a Free table. Kept deliberately small —
-  /// the stock LS Central `Dining Tables` page may reject values that
-  /// aren't in its Option enum.
-  static const List<String> _statusTargets = ['Occupied', 'Reserved'];
+  /// Targets we offer from a Free table. Must match the LS Central
+  /// `Dining_Table_Status` option enum exactly — BC rejects unknown
+  /// values with `Application_InvalidOptionEnumValue`. The stock
+  /// enum on LS Central Cronus is: Free, Seated, Occupied,
+  /// To Be Cleaned. "Seated" is the normal waiter transition; keeping
+  /// "Occupied" as an alternative for back-office use.
+  static const List<String> _statusTargets = ['Seated', 'Occupied'];
 
   /// Restaurant_No → real store name, sourced from the locally
   /// replicated Store buffer (`ReplicationStore(prefs, 'stores')`).
