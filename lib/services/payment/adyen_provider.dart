@@ -210,12 +210,22 @@ class AdyenProvider implements PaymentProvider {
           'for a boardingToken. Fill in the API key in Settings → Adyen.');
     }
 
-    final boardingToken = _toBase64Url(await _exchangeBoardingToken());
+    final rawToken = await _exchangeBoardingToken();
+    final boardingToken = _toBase64Url(rawToken);
+    _logTokenShape('raw', rawToken);
+    _logTokenShape('base64url', boardingToken);
 
-    final url = Uri.parse('$_appLinkBase/board').replace(queryParameters: {
-      'returnUrl': AdyenAppLinkService.returnUrl,
-      'boardingToken': boardingToken,
-    });
+    // Build the /board URL by string concatenation to avoid any
+    // re-encoding of an already-Base64URL token. Dart's Uri.replace
+    // with queryParameters runs encodeQueryComponent on the values —
+    // harmless for Base64URL chars (A-Z, a-z, 0-9, -, _) but we want
+    // the URL the Adyen app sees to be exactly the token we computed,
+    // verbatim.
+    final encodedReturnUrl = Uri.encodeQueryComponent(
+        AdyenAppLinkService.returnUrl);
+    final url = Uri.parse(
+        '$_appLinkBase/board?boardingToken=$boardingToken'
+        '&returnUrl=$encodedReturnUrl');
     _log.info('Adyen: launching /board with exchanged boardingToken');
 
     final returnUri = await _appLinks.launchAndAwaitReturn(url);
@@ -247,6 +257,27 @@ class AdyenProvider implements PaymentProvider {
       .replaceAll('+', '-')
       .replaceAll('/', '_')
       .replaceAll('=', '');
+
+  /// Logs metadata about a token (length, dot count, char class
+  /// counts, first/last few chars) without dumping the whole value.
+  /// Helps debug 02_005 "boarding token error" without leaking the
+  /// secret into logs.
+  void _logTokenShape(String label, String token) {
+    int dots = 0;
+    int stdB64Only = 0; // + / =
+    int b64UrlOnly = 0; // - _
+    for (var i = 0; i < token.length; i++) {
+      final c = token[i];
+      if (c == '.') dots++;
+      if (c == '+' || c == '/' || c == '=') stdB64Only++;
+      if (c == '-' || c == '_') b64UrlOnly++;
+    }
+    final head = token.length > 6 ? token.substring(0, 6) : token;
+    final tail = token.length > 6 ? token.substring(token.length - 6) : '';
+    _log.info('Adyen token[$label]: len=${token.length} dots=$dots '
+        'stdB64-only=$stdB64Only b64url-only=$b64UrlOnly '
+        'head=$head tail=$tail');
+  }
 
   /// POSTs the cached `boardingRequestToken` to the Management API and
   /// returns the short-lived `boardingToken`.
