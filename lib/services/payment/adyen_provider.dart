@@ -159,20 +159,25 @@ class AdyenProvider implements PaymentProvider {
     return _isBoarded;
   }
 
-  /// Management API base URL used to exchange a `boardingRequestToken`
-  /// for a `boardingToken`. Test or live picked from adyenTestMode.
-  String get _managementApiBase => config.adyenTestMode
-      ? 'https://management-test.adyen.com/v3'
-      : 'https://management-live.adyen.com/v3';
+  /// Payments App API base URL used to exchange a
+  /// `boardingRequestToken` for a `boardingToken`. Shares the host
+  /// with the general Management API (`management-*.adyen.com`) but
+  /// versioned separately at `/v1` — not `/v3`. Test or live picked
+  /// from `adyenTestMode`.
+  String get _paymentsAppApiBase => config.adyenTestMode
+      ? 'https://management-test.adyen.com/v1'
+      : 'https://management-live.adyen.com/v1';
 
   /// Finish the onboarding round-trip. Three-step flow per the Adyen
   /// docs at `point-of-sale/mobile-android/build/payments-app`:
   ///
   ///   1. We already have a `boardingRequestToken` from `/boarded`.
-  ///   2. POST it to the Management API
-  ///      (`/v3/merchants/{id}/stores/{id}/generatePaymentsAppBoardingToken`)
+  ///   2. POST it to the Adyen Payments App API
+  ///      (`/v1/merchants/{id}/stores/{id}/generatePaymentsAppBoardingToken`)
   ///      authenticated with `X-API-Key`, receive a `boardingToken`
-  ///      (Base64URL, valid one hour).
+  ///      (Base64URL, valid one hour). Note: this is a separate API
+  ///      surface from the general Management API (v3) — same host,
+  ///      different version prefix.
   ///   3. Launch `/board?boardingToken=…&returnUrl=…` and wait for the
   ///      Adyen Payments app to call back with `boarded=true` and the
   ///      real `installationId`.
@@ -270,7 +275,7 @@ class AdyenProvider implements PaymentProvider {
   /// success, or null if the endpoint returned 404 (letting the caller
   /// try a fallback path). Throws [StateError] on any other failure.
   Future<String?> _postExchange(String path) async {
-    final url = Uri.parse('$_managementApiBase$path');
+    final url = Uri.parse('$_paymentsAppApiBase$path');
     _log.info('Adyen: POST $url (exchange boardingRequestToken)');
 
     final response = await http.post(
