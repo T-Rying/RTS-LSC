@@ -549,6 +549,19 @@ class AdyenProvider implements PaymentProvider {
     final errorCondition = resp['ErrorCondition'] as String?;
     final additional = resp['AdditionalResponse'] as String?;
 
+    // Log a structured summary of the Adyen response so we can tell
+    // "declined because X" apart from "declined because Y" without
+    // decrypting after the fact. AdditionalResponse is a URL-encoded
+    // query string like `message=&refusalReason=…&traceparent=…` —
+    // most diagnostic info lives there.
+    final keys = pr.keys.toList();
+    _log.info('Adyen NEXO response: result=$result '
+        'errorCondition=${errorCondition ?? "none"} '
+        'paymentResponseKeys=${keys.join(",")}');
+    if (additional != null && additional.isNotEmpty) {
+      _log.info('Adyen NEXO AdditionalResponse: $additional');
+    }
+
     final paymentResult = pr['PaymentResult'] as Map<String, dynamic>?;
     final amountsResp =
         paymentResult?['AmountsResp'] as Map<String, dynamic>?;
