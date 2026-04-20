@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
 
+import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../models/environment_config.dart';
@@ -157,15 +159,32 @@ class AdyenProvider implements PaymentProvider {
     return _isBoarded;
   }
 
-  /// Finish the onboarding round-trip. Launches the Adyen app at
-  /// `/board` with the cached [boardingRequestToken]; on return we
-  /// expect `boarded=true` and a real `installationId` we can use as
-  /// POI ID in Terminal API requests.
+  /// Management API base URL used to exchange a `boardingRequestToken`
+  /// for a `boardingToken`. Test or live picked from adyenTestMode.
+  String get _managementApiBase => config.adyenTestMode
+      ? 'https://management-test.adyen.com/v3'
+      : 'https://management-live.adyen.com/v3';
+
+  /// Finish the onboarding round-trip. Three-step flow per the Adyen
+  /// docs at `point-of-sale/mobile-android/build/payments-app`:
   ///
-  /// Requires a prior successful /boarded probe that returned a
-  /// `boardingRequestToken` — throws [StateError] if there's nothing
-  /// cached. Throws [TimeoutException] if the Adyen app doesn't return
-  /// within 30s.
+  ///   1. We already have a `boardingRequestToken` from `/boarded`.
+  ///   2. POST it to the Management API
+  ///      (`/v3/merchants/{id}/stores/{id}/generatePaymentsAppBoardingToken`)
+  ///      authenticated with `X-API-Key`, receive a `boardingToken`
+  ///      (Base64URL, valid one hour).
+  ///   3. Launch `/board?boardingToken=…&returnUrl=…` and wait for the
+  ///      Adyen Payments app to call back with `boarded=true` and the
+  ///      real `installationId`.
+  ///
+  /// Adyen's docs describe step 2 as a merchant-backend operation —
+  /// RTS-LSC has no backend today, so the mobile app does the exchange
+  /// itself using the API key stored in EnvironmentConfig. That's why
+  /// the API key must be filled in for pairing to work.
+  ///
+  /// Throws [StateError] if the API key or boardingRequestToken is
+  /// missing, or if the Management API rejects the exchange. Throws
+  /// [TimeoutException] if the Adyen app doesn't return within 30s.
   Future<bool> completeBoarding() async {
     if (!_initialized) {
       final ok = await initialize();
@@ -180,12 +199,19 @@ class AdyenProvider implements PaymentProvider {
           'No boardingRequestToken cached — run "Check boarding status" '
           'first to obtain one.');
     }
+    if (config.adyenApiKey.isEmpty) {
+      throw StateError(
+          'Adyen API key is required to exchange the boardingRequestToken '
+          'for a boardingToken. Fill in the API key in Settings → Adyen.');
+    }
+
+    final boardingToken = await _exchangeBoardingToken();
 
     final url = Uri.parse('$_appLinkBase/board').replace(queryParameters: {
       'returnUrl': AdyenAppLinkService.returnUrl,
-      'boardingRequestToken': _lastBoardingRequestToken,
+      'boardingToken': boardingToken,
     });
-    _log.info('Adyen: launching /board completion at ${url.host}${url.path}');
+    _log.info('Adyen: launching /board with exchanged boardingToken');
 
     final returnUri = await _appLinks.launchAndAwaitReturn(url);
     _log.info('Adyen: /board returned ${_summarizeReturn(returnUri)}');
@@ -193,16 +219,65 @@ class AdyenProvider implements PaymentProvider {
     final params = returnUri.queryParameters;
     _isBoarded = params['boarded']?.toLowerCase() == 'true';
     _installationId = params['installationId'] ?? _installationId;
-    // If boarding succeeded the token has been spent; otherwise keep
-    // (or update) it so a retry is possible.
-    if (_isBoarded) {
-      _lastBoardingRequestToken = '';
-    } else {
-      _lastBoardingRequestToken =
-          params['boardingRequestToken'] ?? _lastBoardingRequestToken;
-    }
+    // /board doesn't re-issue a boardingRequestToken — the old one is
+    // single-use after the Management API exchange. On failure the user
+    // should re-run /boarded to get a fresh one.
+    _lastBoardingRequestToken = '';
     await _saveCachedBoardingState();
+    if (!_isBoarded) {
+      final err = params['error'];
+      throw StateError(err != null && err.isNotEmpty
+          ? 'Adyen /board returned error: $err'
+          : 'Adyen /board returned boarded=false — try Check again.');
+    }
     return _isBoarded;
+  }
+
+  /// POSTs the cached `boardingRequestToken` to the Management API and
+  /// returns the short-lived `boardingToken`. Scoped to the store when
+  /// `adyenStoreId` is set (the Adyen Payments app expects store-level
+  /// pairing for POS installs).
+  Future<String> _exchangeBoardingToken() async {
+    final merchantId = Uri.encodeComponent(config.adyenMerchantAccount);
+    final storeId = config.adyenStoreId;
+    final path = storeId.isEmpty
+        ? '/merchants/$merchantId/generatePaymentsAppBoardingToken'
+        : '/merchants/$merchantId/stores/${Uri.encodeComponent(storeId)}'
+            '/generatePaymentsAppBoardingToken';
+    final url = Uri.parse('$_managementApiBase$path');
+    _log.info('Adyen: POST $url (exchange boardingRequestToken)');
+
+    final response = await http.post(
+      url,
+      headers: {
+        'X-API-Key': config.adyenApiKey,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+      body: jsonEncode({'boardingRequestToken': _lastBoardingRequestToken}),
+    );
+    if (response.statusCode != 200 && response.statusCode != 201) {
+      _log.error('Adyen: boardingToken exchange failed '
+          '(${response.statusCode}): ${response.body}');
+      throw StateError(
+          'Management API rejected the boardingRequestToken '
+          '(${response.statusCode}): ${response.body}');
+    }
+    final decoded = jsonDecode(response.body);
+    if (decoded is! Map<String, dynamic>) {
+      throw StateError('Management API returned non-JSON response');
+    }
+    final token = decoded['boardingToken'] as String?;
+    if (token == null || token.isEmpty) {
+      throw StateError(
+          'Management API response missing boardingToken: ${response.body}');
+    }
+    final installation = decoded['installationId'] as String?;
+    if (installation != null && installation.isNotEmpty) {
+      _installationId = installation;
+    }
+    _log.info('Adyen: received boardingToken (1h TTL) from Management API');
+    return token;
   }
 
   String _summarizeReturn(Uri uri) {

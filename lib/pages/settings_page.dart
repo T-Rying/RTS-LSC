@@ -730,10 +730,14 @@ class _SettingsPageState extends State<SettingsPage> {
                                         CupertinoActivityIndicator(
                                             color: CupertinoColors.white),
                                         SizedBox(width: 8),
-                                        Text('Checking…'),
+                                        Text('Checking…',
+                                            style: TextStyle(
+                                                color: CupertinoColors.white)),
                                       ],
                                     )
-                                  : const Text('Check'),
+                                  : const Text('Check',
+                                      style: TextStyle(
+                                          color: CupertinoColors.white)),
                             ),
                           ],
                         ),
@@ -752,7 +756,8 @@ class _SettingsPageState extends State<SettingsPage> {
                                     horizontal: 12, vertical: 6),
                                 color: _primaryColor,
                                 onPressed: (_adyenCompletingBoarding ||
-                                        _adyenCheckingBoarding)
+                                        _adyenCheckingBoarding ||
+                                        _connection!.adyenApiKey.isEmpty)
                                     ? null
                                     : _completeAdyenBoarding,
                                 child: _adyenCompletingBoarding
@@ -762,13 +767,29 @@ class _SettingsPageState extends State<SettingsPage> {
                                           CupertinoActivityIndicator(
                                               color: CupertinoColors.white),
                                           SizedBox(width: 8),
-                                          Text('Pairing…'),
+                                          Text('Pairing…',
+                                              style: TextStyle(
+                                                  color:
+                                                      CupertinoColors.white)),
                                         ],
                                       )
-                                    : const Text('Pair'),
+                                    : const Text('Pair',
+                                        style: TextStyle(
+                                            color: CupertinoColors.white)),
                               ),
                             ],
                           ),
+                          if (_connection!.adyenApiKey.isEmpty) ...[
+                            const SizedBox(height: 4),
+                            const Text(
+                              'API key required — the app exchanges the '
+                              'boardingRequestToken at the Adyen Management '
+                              'API before launching /board.',
+                              style: TextStyle(
+                                  fontSize: 11,
+                                  color: CupertinoColors.systemGrey),
+                            ),
+                          ],
                         ],
                         if (_adyenBoardingStatus != null) ...[
                           const SizedBox(height: 6),
