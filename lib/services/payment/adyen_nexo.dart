@@ -76,7 +76,21 @@ class AdyenNexo {
       'ProtocolVersion': '3.0',
     };
 
-    final plaintext = Uint8List.fromList(utf8.encode(jsonEncode(innerRequest)));
+    // Per Adyen's reference implementation (adyen-java-api-library
+    // TerminalLocalAPI + NexoCrypto), the plaintext that gets
+    // encrypted is the ENTIRE unencrypted SaleToPOIRequest JSON —
+    // MessageHeader + body — not just the body. The wire envelope
+    // duplicates the MessageHeader at the top so Adyen can route
+    // without decrypting; they still verify the embedded copy
+    // matches after decrypting.
+    final saleToPoiInner = <String, dynamic>{
+      'MessageHeader': header,
+      ...innerRequest,
+    };
+    final plaintextJson = jsonEncode(<String, dynamic>{
+      'SaleToPOIRequest': saleToPoiInner,
+    });
+    final plaintext = Uint8List.fromList(utf8.encode(plaintextJson));
     final encrypted = crypto.encrypt(plaintext);
     final hmacDigest = crypto.hmac(plaintext);
 
@@ -157,10 +171,26 @@ class AdyenNexo {
           'discarding message (possible tampering or wrong shared key)');
     }
 
+    // Decrypted plaintext is the full
+    // `{"SaleToPOIResponse":{"MessageHeader":{...},"PaymentResponse":{...}}}`
+    // JSON (mirror of the request shape). Unwrap twice so the caller
+    // gets back `{"PaymentResponse": {...}}` to map onto a
+    // PaymentResult.
     final decoded = jsonDecode(utf8.decode(plaintext));
     if (decoded is! Map<String, dynamic>) {
       throw StateError('NEXO decrypted payload is not a JSON object');
     }
-    return decoded;
+    final inner = decoded['SaleToPOIResponse'];
+    if (inner is! Map<String, dynamic>) {
+      throw StateError(
+          'NEXO decrypted payload missing SaleToPOIResponse: '
+          '${decoded.keys.join(",")}');
+    }
+    final body = <String, dynamic>{};
+    inner.forEach((k, v) {
+      if (k == 'MessageHeader') return;
+      body[k] = v;
+    });
+    return body;
   }
 }
