@@ -58,6 +58,12 @@ class HospitalityType {
   bool get hasGraphicalLayout =>
       hasDiningArea && _graphicalViews.contains(layoutView);
 
+  /// True when the type should be rendered as an evenly-spaced grid
+  /// (one cell per table) rather than a coordinate-positioned floor
+  /// plan. Lets the mobile page skip the designer's x/y coordinates
+  /// when they aren't meaningful for this layout view.
+  bool get isGridView => layoutView == 'Dining Table Grid';
+
   String get displayLabel =>
       description.isNotEmpty ? '$salesType · $description' : salesType;
 

@@ -362,6 +362,14 @@ class _HospitalityPageState extends State<HospitalityPage> {
         ),
       );
     }
+    if (type.isGridView) {
+      return _Grid(
+        tables: tables,
+        selectedTable: _tappedTable,
+        statusLookup: (t) => layout.statusFor(t.areaId, t.tableNo),
+        onTapTable: (t) => setState(() => _tappedTable = t),
+      );
+    }
     return _Canvas(
       tables: tables,
       selectedTable: _tappedTable,
@@ -734,6 +742,53 @@ class _MetaCard extends StatelessWidget {
             style: const TextStyle(
                 fontSize: 12, color: CupertinoColors.black, fontWeight: FontWeight.w600)),
       ],
+    );
+  }
+}
+
+/// Evenly-spaced grid used for hospitality types whose `Layout_View`
+/// is `Dining Table Grid`. Ignores the designer's x/y coordinates —
+/// every table gets an equal tile sized to fill the available width.
+class _Grid extends StatelessWidget {
+  final List<DiningTable> tables;
+  final DiningTable? selectedTable;
+  final DiningTableStatus? Function(DiningTable) statusLookup;
+  final ValueChanged<DiningTable> onTapTable;
+
+  const _Grid({
+    required this.tables,
+    required this.selectedTable,
+    required this.statusLookup,
+    required this.onTapTable,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final sorted = [...tables]..sort((a, b) => a.tableNo.compareTo(b.tableNo));
+    return Container(
+      color: const Color(0xFFF3F5F9),
+      child: GridView.builder(
+        padding: const EdgeInsets.all(12),
+        gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+          maxCrossAxisExtent: 110,
+          crossAxisSpacing: 10,
+          mainAxisSpacing: 10,
+          childAspectRatio: 1.0,
+        ),
+        itemCount: sorted.length,
+        itemBuilder: (context, i) {
+          final t = sorted[i];
+          return _TableTile(
+            table: t,
+            status: statusLookup(t),
+            selected: selectedTable != null &&
+                selectedTable!.tableNo == t.tableNo &&
+                selectedTable!.areaId == t.areaId &&
+                selectedTable!.layoutCode == t.layoutCode,
+            onTap: () => onTapTable(t),
+          );
+        },
+      ),
     );
   }
 }
