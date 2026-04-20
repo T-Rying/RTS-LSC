@@ -16,5 +16,15 @@ class MainActivity : FlutterActivity() {
             flutterEngine.dartExecutor.binaryMessenger,
             SoftPayPlugin.CHANNEL
         ).setMethodCallHandler(softPayPlugin)
+
+        // Reverse channel — Kotlin invokes Dart for Adyen /nexo dispatch.
+        // Dart registers a handler via AdyenNativeBridge; Kotlin's
+        // dispatchToActiveProvider calls through when activeProvider is
+        // "adyen" so the Payments-app App-Link round-trip runs in Dart
+        // while LS Central's JS bridge stays blocked on the latch.
+        softPayPlugin.adyenDispatchChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            SoftPayPlugin.ADYEN_DISPATCH_CHANNEL
+        )
     }
 }

@@ -29,10 +29,20 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
     companion object {
         private const val TAG = "SoftPayPlugin"
         const val CHANNEL = "com.rts.lsc/softpay"
+        /// Channel used by Kotlin to invoke Dart for the Adyen /nexo
+        /// dispatch. Dart registers a handler (see AdyenNativeBridge)
+        /// that routes the call into AdyenProvider and returns the
+        /// LS Central response JSON string.
+        const val ADYEN_DISPATCH_CHANNEL = "com.rts.lsc/adyen-dispatch"
     }
 
     private var client: Client? = null
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    /// Kotlin → Dart channel, wired up in MainActivity.configureFlutterEngine.
+    /// Optional because the POS page may not be mounted yet; if null when
+    /// LS Central sends a Purchase we return a clean "not ready" response.
+    var adyenDispatchChannel: MethodChannel? = null
 
     // Which payment provider the Dart side has selected. Set via the
     // `setProvider` MethodChannel; defaults to "softpay" for backwards
@@ -397,14 +407,52 @@ class SoftPayPlugin(private val context: Context) : MethodChannel.MethodCallHand
         return when (activeProvider) {
             "softpay" -> false // fall through to SoftPay path
             "adyen" -> {
-                Log.w(TAG, "$command requested but Adyen provider is not " +
-                        "implemented yet (Phase A stub). Returning declined.")
-                val response = errorResponse(
-                    "Adyen $command is not yet implemented. " +
-                    "Switch to SoftPay in Settings."
+                val channel = adyenDispatchChannel
+                if (channel == null) {
+                    Log.w(TAG, "$command with Adyen but adyenDispatchChannel is null — " +
+                            "POS page not mounted yet?")
+                    val response = errorResponse(
+                        "Adyen bridge not initialized. Open the POS page and retry."
+                    )
+                    lastTransactionJson = response
+                    callback(response)
+                    return true
+                }
+                val args = mapOf(
+                    "command" to command,
+                    "json" to json.toString(),
                 )
-                lastTransactionJson = response
-                callback(response)
+                Log.i(TAG, "Dispatching $command to Dart Adyen provider via channel")
+                mainHandler.post {
+                    channel.invokeMethod("dispatchPayment", args, object : MethodChannel.Result {
+                        override fun success(result: Any?) {
+                            val respJson = (result as? String) ?: errorResponse(
+                                "Dart Adyen handler returned non-string: $result"
+                            )
+                            lastTransactionJson = respJson
+                            callback(respJson)
+                        }
+
+                        override fun error(code: String, msg: String?, details: Any?) {
+                            Log.e(TAG, "Adyen dispatch error code=$code msg=$msg")
+                            val respJson = errorResponse(
+                                "Adyen dispatch failed ($code): ${msg ?: ""}"
+                            )
+                            lastTransactionJson = respJson
+                            callback(respJson)
+                        }
+
+                        override fun notImplemented() {
+                            Log.e(TAG, "Adyen dispatchPayment not registered in Dart")
+                            val respJson = errorResponse(
+                                "Adyen dispatch handler not registered. " +
+                                "Reload the POS page."
+                            )
+                            lastTransactionJson = respJson
+                            callback(respJson)
+                        }
+                    })
+                }
                 true
             }
             "none" -> {

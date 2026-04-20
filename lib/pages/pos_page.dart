@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import '../models/environment_config.dart';
 import '../services/log_service.dart';
+import '../services/payment/adyen_native_bridge.dart';
 import '../services/payment/payment_provider.dart';
 import '../services/payment/payment_provider_factory.dart';
 import '../services/payment/payment_result.dart';
@@ -505,6 +506,19 @@ class _PosPageState extends State<PosPage> {
     _log.info('Loading: $_posUrl');
     _registerNativeJsInterfaceThenLoad();
     _initPaymentProvider();
+
+    // LS Central's JS bridge uses the blocking Kotlin path
+    // (`LSAppShell.request`) for Purchase/Refund/Void. When the active
+    // provider is Adyen, the Kotlin side routes back through this
+    // handler so the /nexo App-Link round-trip runs in Dart while LS
+    // Central stays blocked on its latch.
+    AdyenNativeBridge.instance.start(handler: _handleAdyenDispatch);
+  }
+
+  @override
+  void dispose() {
+    AdyenNativeBridge.instance.stop();
+    super.dispose();
   }
 
   /// Register the native blocking JS interface BEFORE the first page load.
@@ -834,6 +848,134 @@ class _PosPageState extends State<PosPage> {
       'AmountBreakdown': {
         'TotalAmount': amountDecimal,
         'CurrencyCode': txn.currencyCode ?? 'DKK',
+        'CashbackAmount': 0.0,
+        'TaxAmount': 0.0,
+        'SurchargeAmount': 0.0,
+        'TipAmount': 0.0,
+      },
+    });
+  }
+
+  /// Kotlin → Dart callback for Adyen when LS Central's JS bridge
+  /// calls `LSAppShell.request("Purchase"|"Refund"|"Void", ...)`.
+  /// Returns the LS Central response JSON string (same shape as the
+  /// postMessage async path), which Kotlin passes back through the
+  /// WebViewJsInterface latch so LS Central unblocks.
+  Future<String> _handleAdyenDispatch(
+      String command, Map<String, dynamic> json) async {
+    _log.info('ADYEN DISPATCH: command=$command');
+
+    if (widget.config.paymentProvider != PaymentProviderType.adyen) {
+      return _toLsCentralErrorJson(
+          command: command,
+          transactionId: json['TransactionId'] as String? ?? '',
+          message: 'Active payment provider is '
+              '${widget.config.paymentProvider.name}, not Adyen.');
+    }
+
+    if (!_paymentProvider.isInitialized) {
+      _log.warn('Adyen not initialized on dispatch, re-initializing…');
+      await _initPaymentProvider();
+      if (!_paymentProvider.isInitialized) {
+        return _toLsCentralErrorJson(
+            command: command,
+            transactionId: json['TransactionId'] as String? ?? '',
+            message: 'Adyen failed to initialize');
+      }
+    }
+
+    final amountBreakdown = json['AmountBreakdown'] as Map<String, dynamic>?;
+    final totalAmount = amountBreakdown?['TotalAmount'];
+    final currencyCode =
+        amountBreakdown?['CurrencyCode'] as String? ?? 'DKK';
+    final transactionId = json['TransactionId'] as String? ?? '';
+    final amountMinor = totalAmount is num
+        ? (totalAmount * 100).round()
+        : int.tryParse(totalAmount.toString()) ?? 0;
+
+    _log.info('  Amount=$totalAmount ($amountMinor minor) '
+        '$currencyCode ref=$transactionId');
+
+    PaymentResult result;
+    switch (command) {
+      case 'Purchase':
+      case 'PreAuth':
+      case 'FinalizePreAuth':
+        result = await _paymentProvider.purchase(
+          amount: amountMinor,
+          currency: currencyCode,
+          posReferenceNumber: transactionId,
+        );
+        break;
+      case 'Refund':
+        result = await _paymentProvider.refund(
+          amount: amountMinor,
+          currency: currencyCode,
+          posReferenceNumber: transactionId,
+        );
+        break;
+      case 'Void':
+        final origTxnIds = json['OriginalTransactionIds'] as Map<String, dynamic>?;
+        final origProviderTxnId = origTxnIds?['EFTTransactionId'] as String?;
+        result = await _paymentProvider.cancel(
+          providerTransactionId: origProviderTxnId,
+        );
+        break;
+      default:
+        result = await _paymentProvider.purchase(
+          amount: amountMinor,
+          currency: currencyCode,
+          posReferenceNumber: transactionId,
+        );
+        break;
+    }
+
+    if (result.transaction != null) {
+      _lastTransaction = result.transaction;
+    }
+    _lastTransactionId = transactionId;
+    _lastCommand = command;
+
+    if (result.success && result.transaction != null) {
+      _log.info('  Adyen $command OK via dispatch: ${result.transaction!.state}');
+      return _toLsCentralJson(result.transaction!, transactionId);
+    }
+    _log.error('  Adyen $command FAILED via dispatch: ${result.errorMessage}');
+    return _toLsCentralErrorJson(
+        command: command,
+        transactionId: transactionId,
+        message: result.errorMessage ?? 'Transaction failed',
+        transaction: result.transaction);
+  }
+
+  String _toLsCentralErrorJson({
+    required String command,
+    required String transactionId,
+    required String message,
+    PaymentTransaction? transaction,
+  }) {
+    return jsonEncode({
+      'TransactionType': command,
+      'AuthorizationStatus': 'Declined',
+      'AuthorizationCode': '',
+      'ResultCode': 'Error',
+      'Message': message,
+      'TenderType': transaction?.cardScheme ?? '',
+      'IDs': {
+        'TransactionId': transactionId,
+        'EFTTransactionId': transaction?.providerTransactionId ?? '',
+        'TransactionDateTime': DateTime.now().toIso8601String(),
+        'AdditionalId': '',
+        'MerchantOrderId': '',
+        'BatchNumber': '',
+      },
+      'CardDetails': {
+        'CardNumber': '',
+        'CardIssuer': '',
+      },
+      'AmountBreakdown': {
+        'TotalAmount': 0.0,
+        'CurrencyCode': transaction?.currencyCode ?? 'DKK',
         'CashbackAmount': 0.0,
         'TaxAmount': 0.0,
         'SurchargeAmount': 0.0,
