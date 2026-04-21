@@ -66,7 +66,13 @@ class _SettingsPageState extends State<SettingsPage> {
   /// Launch the Adyen /boarded App Link probe and update the UI with the
   /// result. Safe to call repeatedly. If the Adyen Payments Test app isn't
   /// installed, the error banner will point the user at the install step.
-  Future<void> _checkAdyenBoardingStatus() async {
+  ///
+  /// Set [reboard] to true to send `reboard=true` — forces the Adyen
+  /// Payments app to drop its cached capability profile and re-board
+  /// from scratch. Useful after Adyen-side config changes (e.g.
+  /// enabling TTP Android terminal settings) that the already-boarded
+  /// installation can't see.
+  Future<void> _checkAdyenBoardingStatus({bool reboard = false}) async {
     final conn = _connection;
     if (conn == null) return;
 
@@ -87,7 +93,7 @@ class _SettingsPageState extends State<SettingsPage> {
         });
         return;
       }
-      final boarded = await provider.checkBoardingStatus();
+      final boarded = await provider.checkBoardingStatus(reboard: reboard);
       setState(() {
         _adyenCheckingBoarding = false;
         _adyenIsBoarded = boarded;
@@ -97,7 +103,7 @@ class _SettingsPageState extends State<SettingsPage> {
             ? 'Boarded (installationId: ${provider.installationId})'
             : _adyenHasBoardingToken
                 ? 'Not boarded yet — boardingRequestToken received. Tap '
-                    '"Complete boarding" to finish pairing this device.'
+                    '"Pair" to finish pairing this device.'
                 : 'Not boarded yet and no boardingRequestToken returned. '
                     'Check that the Adyen Payments app role is enabled on '
                     'your API key.';
@@ -120,6 +126,36 @@ class _SettingsPageState extends State<SettingsPage> {
         _adyenBoardingError = 'Probe failed: $e';
       });
     }
+  }
+
+  /// Force a fresh boarding round-trip after merchant-side config
+  /// changes. Confirms first because it requires the user to re-tap
+  /// Pair afterwards to complete the exchange.
+  Future<void> _reboardAdyen() async {
+    final confirmed = await showCupertinoDialog<bool>(
+      context: context,
+      builder: (ctx) => CupertinoAlertDialog(
+        title: const Text('Re-board this device?'),
+        content: const Text(
+          'Forces the Adyen Payments app to drop its cached setup and '
+          'start boarding over. You\'ll need to tap "Pair" afterwards '
+          'to finish. Use this when Adyen-side changes (e.g. new '
+          'terminal settings) need to land on the device.',
+        ),
+        actions: [
+          CupertinoDialogAction(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          CupertinoDialogAction(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Re-board'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await _checkAdyenBoardingStatus(reboard: true);
   }
 
   /// Launch the Adyen /board App Link with the cached boardingRequestToken
@@ -964,6 +1000,42 @@ class _SettingsPageState extends State<SettingsPage> {
                                       ],
                                     )
                                   : const Text('Query Adyen',
+                                      style: TextStyle(
+                                          color: CupertinoColors.white)),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            const Icon(CupertinoIcons.arrow_clockwise,
+                                color: _primaryColor, size: 18),
+                            const SizedBox(width: 8),
+                            const Text('Re-board (drop cached profile)',
+                                style: TextStyle(fontWeight: FontWeight.w500)),
+                            const Spacer(),
+                            CupertinoButton(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 12, vertical: 6),
+                              color: _primaryColor,
+                              onPressed: (_adyenCheckingServerReg ||
+                                      _adyenCheckingBoarding ||
+                                      _adyenCompletingBoarding)
+                                  ? null
+                                  : _reboardAdyen,
+                              child: _adyenCheckingBoarding
+                                  ? const Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        CupertinoActivityIndicator(
+                                            color: CupertinoColors.white),
+                                        SizedBox(width: 8),
+                                        Text('Re-boarding…',
+                                            style: TextStyle(
+                                                color: CupertinoColors.white)),
+                                      ],
+                                    )
+                                  : const Text('Re-board',
                                       style: TextStyle(
                                           color: CupertinoColors.white)),
                             ),

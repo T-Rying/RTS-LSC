@@ -131,13 +131,20 @@ class AdyenProvider implements PaymentProvider {
   /// which returns via our deep-link scheme with `boarded`, `installationId`,
   /// and `boardingRequestToken` query params.
   ///
+  /// Set [reboard] to `true` to send `reboard=true` — that tells the
+  /// Adyen Payments app to drop its local cache and treat the device
+  /// as unboarded, even if it was previously boarded. Useful when the
+  /// merchant-side config (e.g. TTP terminal settings) changed after
+  /// the original boarding and the app is still advertising the old
+  /// capability profile.
+  ///
   /// Updates [isBoarded], [installationId], [lastBoardingRequestToken] and
   /// persists the new values. Returns true iff the device reports as boarded.
   ///
   /// Throws [TimeoutException] if the Adyen app doesn't return within 30s.
   /// Throws [StateError] if the Adyen app isn't installed or no provider
   /// credentials are set.
-  Future<bool> checkBoardingStatus() async {
+  Future<bool> checkBoardingStatus({bool reboard = false}) async {
     if (!_initialized) {
       final ok = await initialize();
       if (!ok) {
@@ -149,8 +156,10 @@ class AdyenProvider implements PaymentProvider {
 
     final url = Uri.parse('$_appLinkBase/boarded').replace(queryParameters: {
       'returnUrl': AdyenAppLinkService.returnUrl,
+      if (reboard) 'reboard': 'true',
     });
-    _log.info('Adyen: launching /boarded probe at $url');
+    _log.info('Adyen: launching /boarded probe at $url'
+        '${reboard ? " (forced reboard)" : ""}');
 
     final returnUri = await _appLinks.launchAndAwaitReturn(url);
     _log.info('Adyen: /boarded returned ${_summarizeReturn(returnUri)}');
