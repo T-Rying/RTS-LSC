@@ -290,22 +290,41 @@ class _SettingsPageState extends State<SettingsPage> {
                   clientIdController.text.trim().isEmpty ||
                   clientSecretController.text.trim().isEmpty) return;
             }
-            final config = EnvironmentConfig(
-              type: selectedType,
-              serverUrl: serverController.text.trim(),
-              instance: instanceController.text.trim(),
-              port: int.tryParse(portController.text.trim()) ?? 7048,
-              tenant: tenantController.text.trim(),
-              clientId: clientIdController.text.trim(),
-              clientSecret: clientSecretController.text.trim(),
-              company: companyController.text.trim(),
-              companyName: companyNameController.text.trim(),
-              posUsername: _connection?.posUsername ?? '',
-              posPassword: _connection?.posPassword ?? '',
-              deviceType: _connection?.deviceType ?? DeviceType.phone,
-            );
-            await widget.envService.saveConnection(config);
-            setState(() => _connection = config);
+            // Mutate the existing config in place when one exists so
+            // sibling settings (paymentProvider, Adyen credentials,
+            // SoftPay credentials, storeNo, deviceType) are preserved.
+            // Building a fresh EnvironmentConfig dropped them all and
+            // silently disabled the payment provider on every Save.
+            final existing = _connection;
+            if (existing != null) {
+              existing.type = selectedType;
+              existing.serverUrl = serverController.text.trim();
+              existing.instance = instanceController.text.trim();
+              existing.port =
+                  int.tryParse(portController.text.trim()) ?? 7048;
+              existing.tenant = tenantController.text.trim();
+              existing.clientId = clientIdController.text.trim();
+              existing.clientSecret = clientSecretController.text.trim();
+              existing.company = companyController.text.trim();
+              existing.companyName = companyNameController.text.trim();
+              await widget.envService.saveConnection(existing);
+              setState(() {});
+            } else {
+              final config = EnvironmentConfig(
+                type: selectedType,
+                serverUrl: serverController.text.trim(),
+                instance: instanceController.text.trim(),
+                port: int.tryParse(portController.text.trim()) ?? 7048,
+                tenant: tenantController.text.trim(),
+                clientId: clientIdController.text.trim(),
+                clientSecret: clientSecretController.text.trim(),
+                company: companyController.text.trim(),
+                companyName: companyNameController.text.trim(),
+                deviceType: DeviceType.phone,
+              );
+              await widget.envService.saveConnection(config);
+              setState(() => _connection = config);
+            }
             if (context.mounted) Navigator.pop(context);
           },
           child: Column(
