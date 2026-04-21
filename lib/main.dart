@@ -107,15 +107,29 @@ class _HomePageState extends State<HomePage> {
               if (_connection != null)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 24),
-                  child: Text(
-                    _connection!.type == ConnectionType.saas
-                        ? 'SaaS: ${_connection!.company}'
-                        : 'On-Premise: ${_connection!.serverUrl}',
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                      fontSize: 14,
-                      color: CupertinoColors.systemGrey,
-                    ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      Text(
+                        _connection!.type == ConnectionType.saas
+                            ? 'Environment: ${_connection!.company}'
+                            : 'Server: ${_connection!.serverUrl}',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          fontSize: 14,
+                          color: CupertinoColors.systemGrey,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        'Company: ${_connection!.companyName}',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          fontSize: 14,
+                          color: CupertinoColors.systemGrey,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               if (_connection == null)
