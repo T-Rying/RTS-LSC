@@ -11,14 +11,18 @@ import 'replication_data_page.dart';
 
 const Color _primaryColor = Color(0xFF003366);
 
-/// Descriptor for one replicable entity — wires up the SOAP fetch, local
-/// storage key, viewer title, and how each row should be summarized.
+/// Descriptor for one replicable entity — wires up the SOAP fetch,
+/// local storage key, primary-key extractor (used to apply deletes
+/// and dedupe upserts during delta replication), viewer title, and
+/// how each row should be summarized.
 class _Entity {
   final String key;
   final String displayName;
   final IconData icon;
-  final Future<List<Map<String, dynamic>>> Function(InventoryService, EnvironmentConfig) fetch;
+  final Future<ReplicationResult> Function(
+      InventoryService, EnvironmentConfig, ReplicationCursor) fetch;
   final RowSummarizer summarize;
+  final String Function(Map<String, dynamic>) keyOf;
 
   const _Entity({
     required this.key,
@@ -26,6 +30,7 @@ class _Entity {
     required this.icon,
     required this.fetch,
     required this.summarize,
+    required this.keyOf,
   });
 }
 
@@ -34,45 +39,74 @@ final _entities = <_Entity>[
     key: 'barcodes',
     displayName: 'Barcodes',
     icon: CupertinoIcons.barcode,
-    fetch: (svc, cfg) => svc.getBarcodes(cfg),
+    fetch: (svc, cfg, cur) => svc.getBarcodes(cfg, previousCursor: cur),
     summarize: _summarizeBarcode,
+    keyOf: (row) => _composite(row, const ['Barcode No.']),
   ),
   _Entity(
     key: 'item_categories',
     displayName: 'Item Categories',
     icon: CupertinoIcons.square_stack_3d_up,
-    fetch: (svc, cfg) => svc.getItemCategories(cfg),
+    fetch: (svc, cfg, cur) => svc.getItemCategories(cfg, previousCursor: cur),
     summarize: _summarizeItemCategory,
+    keyOf: (row) => _composite(row, const ['Code']),
   ),
   _Entity(
     key: 'item_variants',
     displayName: 'Item Variants',
     icon: CupertinoIcons.square_grid_2x2,
-    fetch: (svc, cfg) => svc.getItemVariants(cfg),
+    fetch: (svc, cfg, cur) => svc.getItemVariants(cfg, previousCursor: cur),
     summarize: _summarizeItemVariant,
+    keyOf: (row) => _composite(row, const ['Item No.', 'Code']),
   ),
   _Entity(
     key: 'sales_prices',
     displayName: 'Sales Prices',
     icon: CupertinoIcons.tag,
-    fetch: (svc, cfg) => svc.getSalesPrices(cfg),
+    fetch: (svc, cfg, cur) => svc.getSalesPrices(cfg, previousCursor: cur),
     summarize: _summarizeSalesPrice,
+    keyOf: (row) => _composite(row, const [
+      'Item No.',
+      'Sales Type',
+      'Sales Code',
+      'Currency Code',
+      'Starting Date',
+      'Variant Code',
+      'Unit of Measure Code',
+      'Minimum Quantity',
+    ]),
   ),
   _Entity(
     key: 'item_unit_of_measures',
     displayName: 'Item Units of Measure',
     icon: CupertinoIcons.cube_box,
-    fetch: (svc, cfg) => svc.getItemUnitOfMeasures(cfg),
+    fetch: (svc, cfg, cur) => svc.getItemUnitOfMeasures(cfg, previousCursor: cur),
     summarize: _summarizeItemUnitOfMeasure,
+    keyOf: (row) => _composite(row, const ['Item No.', 'Code']),
   ),
   _Entity(
     key: 'stores',
     displayName: 'Stores',
     icon: CupertinoIcons.building_2_fill,
-    fetch: (svc, cfg) => svc.getStores(cfg),
+    fetch: (svc, cfg, cur) => svc.getStores(cfg, previousCursor: cur),
     summarize: _summarizeStore,
+    keyOf: (row) => _composite(row, const ['No.']),
   ),
 ];
+
+/// Builds a deterministic primary-key string from one or more BC
+/// field values. Joined with `\u0001` so values containing `|` or
+/// other punctuation can't collide. Returns an empty string when no
+/// field is present (caller should treat that as "skip").
+String _composite(Map<String, dynamic> row, List<String> fields) {
+  final parts = <String>[];
+  for (final f in fields) {
+    final v = row[f];
+    if (v == null) return '';
+    parts.add(v.toString());
+  }
+  return parts.join('\u0001');
+}
 
 (String, String) _summarizeBarcode(Map<String, dynamic> row) {
   final title = _pick(row, const ['Barcode No.']) ?? '(no barcode)';
@@ -304,14 +338,39 @@ class _EntityCardState extends State<_EntityCard> {
   bool _loading = false;
   String? _error;
 
-  Future<void> _replicate() async {
+  Future<void> _replicate({bool resetCursor = false}) async {
     setState(() {
       _loading = true;
       _error = null;
     });
     try {
-      final rows = await widget.entity.fetch(_inventory, widget.config);
-      await _store.replace(rows);
+      if (resetCursor) {
+        await _store.clearCursor();
+      }
+      final cursor = _store.cursor() ?? ReplicationCursor.empty;
+      final result = await widget.entity.fetch(
+        _inventory,
+        widget.config,
+        cursor,
+      );
+
+      if (result.wasFullReplication) {
+        // Snapshot mode — server gave us the complete current state,
+        // so blow away any leftover local rows. Deletes inside a
+        // snapshot are unusual but harmless (they were going to be
+        // overwritten anyway).
+        await _store.replace(result.upserts);
+      } else {
+        // Delta mode — merge upserts + deletes into the existing
+        // snapshot using the entity's primary-key extractor.
+        await _store.applyDelta(
+          upserts: result.upserts,
+          deletes: result.deletes,
+          keyOf: widget.entity.keyOf,
+        );
+      }
+      await _store.saveCursor(result.cursor);
+
       if (!mounted) return;
       setState(() {
         _meta = _store.meta();
@@ -325,6 +384,34 @@ class _EntityCardState extends State<_EntityCard> {
         _loading = false;
       });
     }
+  }
+
+  Future<void> _fullResetReplicate() async {
+    final confirmed = await showCupertinoDialog<bool>(
+      context: context,
+      builder: (ctx) => CupertinoAlertDialog(
+        title: Text('Full re-replicate ${widget.entity.displayName}?'),
+        content: const Text(
+          'This clears the local cursor and pulls the entire table again '
+          'from LS Central. Existing rows will be replaced with the '
+          'fresh snapshot. Use this only when delta replication is out '
+          'of sync.',
+        ),
+        actions: [
+          CupertinoDialogAction(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          CupertinoDialogAction(
+            isDestructiveAction: true,
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Re-replicate'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await _replicate(resetCursor: true);
   }
 
   void _openViewer() {
@@ -427,13 +514,30 @@ class _EntityCardState extends State<_EntityCard> {
             ],
           ),
           const SizedBox(height: 8),
-          CupertinoButton(
-            padding: const EdgeInsets.symmetric(vertical: 10),
-            onPressed: hasData && !_loading ? _deleteData : null,
-            child: const Text(
-              'Delete Local Data',
-              style: TextStyle(color: CupertinoColors.destructiveRed),
-            ),
+          Row(
+            children: [
+              Expanded(
+                child: CupertinoButton(
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  onPressed: hasData && !_loading ? _fullResetReplicate : null,
+                  child: const Text(
+                    'Full re-replicate',
+                    style: TextStyle(fontSize: 13),
+                  ),
+                ),
+              ),
+              Expanded(
+                child: CupertinoButton(
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  onPressed: hasData && !_loading ? _deleteData : null,
+                  child: const Text(
+                    'Delete Local Data',
+                    style: TextStyle(
+                        color: CupertinoColors.destructiveRed, fontSize: 13),
+                  ),
+                ),
+              ),
+            ],
           ),
           if (_error != null) ...[
             const SizedBox(height: 12),
