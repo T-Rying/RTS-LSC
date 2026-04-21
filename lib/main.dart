@@ -109,7 +109,7 @@ class _HomePageState extends State<HomePage> {
                   padding: const EdgeInsets.only(bottom: 24),
                   child: Text(
                     _connection!.type == ConnectionType.saas
-                        ? 'SaaS: ${_connection!.tenant}'
+                        ? 'SaaS: ${_connection!.company}'
                         : 'On-Premise: ${_connection!.serverUrl}',
                     textAlign: TextAlign.center,
                     style: const TextStyle(
